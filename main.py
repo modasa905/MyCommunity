@@ -1,38 +1,42 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
-import os
+import sqlite3 # [추가] 파이썬 기본 내장 DB 도구
 
 app = FastAPI()
+DB_NAME = "community.db"
 
-# 저장할 파일 이름
-DB_FILE = "posts.txt"
+# [추가] 처음 실행할 때 DB와 테이블(표)을 만드는 함수
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # 'posts'라는 이름의 표를 만듭니다. (id 번호와 content 내용 칸)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# [추가] 파일에서 글을 읽어오는 함수
-def load_posts():
-    if not os.path.exists(DB_FILE):
-        return []
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        # 파일의 각 줄을 읽어서 리스트로 만듭니다.
-        return [line.strip() for line in f.readlines()]
-
-# [추가] 파일에 글을 저장하는 함수
-def save_post(content):
-    with open(DB_FILE, "a", encoding="utf-8") as f:
-        # 글 끝에 줄바꿈(\n)을 붙여서 파일 끝에 추가(append)합니다.
-        f.write(content + "\n")
+init_db() # 서버 켤 때 실행
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    # 이제 리스트가 아니라 파일에서 글을 가져옵니다.
-    db_posts = load_posts()
+    # DB에서 글 목록 가져오기
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT content FROM posts ORDER BY id DESC") # 최신글부터 가져오기
+    db_posts = [row[0] for row in cursor.fetchall()]
+    conn.close()
     
     posts_list = "".join([f"<li>{post}</li>" for post in db_posts])
     
     html_content = f"""
     <html>
-        <head><meta charset="utf-8"><title>낙준의 저장되는 커뮤니티</title></head>
+        <head><meta charset="utf-8"><title>낙준의 DB 게시판</title></head>
         <body>
-            <h1>영구 저장 게시판 (2차 목표)</h1>
+            <h1>진짜 DB 게시판 (3차 목표)</h1>
             <form action="/post" method="post">
                 <input type="text" name="content" placeholder="내용을 입력하세요" required>
                 <button type="submit">등록</button>
@@ -48,6 +52,10 @@ def read_root():
 
 @app.post("/post")
 def create_post(content: str = Form(...)):
-    # 리스트에 넣는 대신 파일에 저장합니다.
-    save_post(content)
+    # DB에 글 저장하기
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO posts (content) VALUES (?)", (content,))
+    conn.commit()
+    conn.close()
     return HTMLResponse(content="<script>window.location.href='/';</script>")
