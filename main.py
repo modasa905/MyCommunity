@@ -1,35 +1,45 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
+import os
 
 app = FastAPI()
 
-# 1. 데이터를 담을 바구니 (서버를 끄면 초기화되지만, 연습용으로 최고!)
-db_posts = []
+# 저장할 파일 이름
+DB_FILE = "posts.txt"
+
+# [추가] 파일에서 글을 읽어오는 함수
+def load_posts():
+    if not os.path.exists(DB_FILE):
+        return []
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        # 파일의 각 줄을 읽어서 리스트로 만듭니다.
+        return [line.strip() for line in f.readlines()]
+
+# [추가] 파일에 글을 저장하는 함수
+def save_post(content):
+    with open(DB_FILE, "a", encoding="utf-8") as f:
+        # 글 끝에 줄바꿈(\n)을 붙여서 파일 끝에 추가(append)합니다.
+        f.write(content + "\n")
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    # 2. 저장된 글들을 하나씩 리스트 아이템(<li>)으로 만듭니다.
+    # 이제 리스트가 아니라 파일에서 글을 가져옵니다.
+    db_posts = load_posts()
+    
     posts_list = "".join([f"<li>{post}</li>" for post in db_posts])
     
-    # 3. 브라우저에 뿌려줄 HTML 화면 설계
     html_content = f"""
     <html>
-        <head>
-            <meta charset="utf-8">
-            <title>낙준의 커뮤니티</title>
-        </head>
+        <head><meta charset="utf-8"><title>낙준의 저장되는 커뮤니티</title></head>
         <body>
-            <h1>나만의 익명 게시판</h1>
-                        
+            <h1>영구 저장 게시판 (2차 목표)</h1>
             <form action="/post" method="post">
                 <input type="text" name="content" placeholder="내용을 입력하세요" required>
                 <button type="submit">등록</button>
             </form>
-            
             <hr>
-            <h3>전체 글 목록</h3>
             <ul>
-                {posts_list if db_posts else "<li>아직 작성된 글이 없습니다.</li>"}
+                {posts_list if db_posts else "<li>아직 저장된 글이 없습니다.</li>"}
             </ul>
         </body>
     </html>
@@ -38,8 +48,6 @@ def read_root():
 
 @app.post("/post")
 def create_post(content: str = Form(...)):
-    # 4. 사용자가 보낸 content를 리스트에 추가합니다.
-    db_posts.append(content)
-    
-    # 5. 글을 다 썼으면 다시 메인 페이지('/')로 돌아가게 합니다.
+    # 리스트에 넣는 대신 파일에 저장합니다.
+    save_post(content)
     return HTMLResponse(content="<script>window.location.href='/';</script>")
