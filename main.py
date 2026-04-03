@@ -28,8 +28,17 @@ def read_root():
     posts = db.query(Post).order_by(Post.id.desc()).all()
     db.close()
     
-    posts_list = "".join([f"<li>{p.content}</li>" for p in posts])
-    
+    posts_list = ""
+    for p in posts:
+            posts_list += f"""
+            <li style="margin-bottom: 5px;">
+                {p.content}
+                <form action="/delete/{p.id}" method="post" style="display:inline; margin-left:10px;">
+                    <button type="submit" style="color:red; font-size:12px; cursor:pointer;">지우기</button>
+                </form>
+            </li>
+            """
+   
     html_content = f"""
     <html>
         <head><meta charset="utf-8"><title>낙준의 게시판</title></head>
