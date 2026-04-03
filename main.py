@@ -3,14 +3,18 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import os
 
 app = FastAPI()
 
-# [수정] 다시 파일 저장 방식(SQLite)으로 돌아갑니다. 환경변수 필요 없음!
-DATABASE_URL = "sqlite:///./community.db"
+# 1. 환경 변수에서 Supabase 주소를 가져옵니다.
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# SQLite를 쓸 때 필요한 특별 설정입니다.
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+if not DATABASE_URL:
+    raise ValueError("Render 설정에 'DATABASE_URL'이 없습니다! Environment 탭을 확인해주세요.")
+
+# 2. SQLite용 특별 옵션을 빼고, 정석대로 DB 엔진을 만듭니다.
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -26,13 +30,14 @@ def read_root():
     db = SessionLocal()
     posts = db.query(Post).order_by(Post.id.desc()).all()
     db.close()
+    
     posts_list = "".join([f"<li>{p.content}</li>" for p in posts])
     
     html_content = f"""
     <html>
-        <head><meta charset="utf-8"><title>낙준의 게시판 (로컬 저장)</title></head>
+        <head><meta charset="utf-8"><title>낙준의 Supabase 게시판</title></head>
         <body>
-            <h1>게시판 (SQLite)</h1>
+            <h1>낙준 게시판</h1>
             <form action="/post" method="post">
                 <input type="text" name="content" placeholder="내용을 입력하세요" required>
                 <button type="submit">등록</button>
