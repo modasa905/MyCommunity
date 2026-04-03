@@ -10,10 +10,7 @@ app = FastAPI()
 # 1. 환경 변수에서 Supabase 주소를 가져옵니다.
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise ValueError("Render 설정에 'DATABASE_URL'이 없습니다! Environment 탭을 확인해주세요.")
-
-# 2. SQLite용 특별 옵션을 빼고, 정석대로 DB 엔진을 만듭니다.
+# 2. DB 엔진을 만듭니다.
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -35,9 +32,9 @@ def read_root():
     
     html_content = f"""
     <html>
-        <head><meta charset="utf-8"><title>낙준의 Supabase 게시판</title></head>
+        <head><meta charset="utf-8"><title>낙준의 게시판</title></head>
         <body>
-            <h1>낙준 게시판</h1>
+            <h1>낙준의 게시판에 오신 것을 환영합니다!</h1>
             <form action="/post" method="post">
                 <input type="text" name="content" placeholder="내용을 입력하세요" required>
                 <button type="submit">등록</button>
@@ -58,4 +55,20 @@ def create_post(content: str = Form(...)):
     db.add(new_post)
     db.commit()
     db.close()
+    return RedirectResponse(url="/", status_code=303)
+
+# 특정 ID의 글을 찾아서 삭제하는 기능
+@app.post("/delete/{post_id}")
+def delete_post(post_id: int):
+    db = SessionLocal()
+    # 1. DB에서 post_id 번호와 일치하는 글을 찾습니다.
+    post_to_delete = db.query(Post).filter(Post.id == post_id).first()
+    
+    # 2. 글이 존재한다면 삭제(delete)하고 저장(commit)합니다.
+    if post_to_delete:
+        db.delete(post_to_delete)
+        db.commit()
+        
+    db.close()
+    # 3. 메인 화면으로 돌아갑니다.
     return RedirectResponse(url="/", status_code=303)
