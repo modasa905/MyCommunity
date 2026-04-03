@@ -4,22 +4,29 @@ from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
+from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
 
-# 1. 환경 변수에서 Supabase 주소를 가져옵니다.
+# 환경 변수에서 Supabase 주소를 가져오기
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# 2. DB 엔진을 만듭니다.
+# DB 엔진 만들기
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# KST 구하는 함수 만들기
+KST = timezone(timedelta(hours=9))
+def get_kst_now():
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M")
 
 class Post(Base):
     __tablename__ = "posts"
     id = Column(Integer, primary_key=True, index=True)
     content = Column(String)
     password = Column(String)
+    created_at = Column(String, default=get_kst_now)
 
 Base.metadata.create_all(bind=engine)
 
@@ -32,8 +39,9 @@ def read_root():
     posts_list = ""
     for p in posts:
             posts_list += f"""
-            <li style="margin-bottom: 10px;">
-                {p.content}
+            <li style="margin-bottom: 15px;">
+                <span style="color: gray; font-size: 13px; margin-right: 10px;">[{p.created_at}]</span>
+                <span style="font-size: 16px;">{p.content}</span>
                 <form action="/delete/{p.id}" method="post" style="display:inline; margin-left:10px;">
                     <input type="password" name="password" placeholder="삭제 비밀번호" required style="width: 90px; padding: 2px;">
                     <button type="submit" style="color:white; background-color:red; border:none; border-radius:3px; padding: 3px 6px; cursor:pointer;">지우기</button>
