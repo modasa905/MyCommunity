@@ -131,7 +131,7 @@ def render_page(posts):
                 `;
 
                 try {{
-                    // [STEP 1] 빠른 검색 (Gemini + Supabase)
+                    // [STEP 1] 빠른 검색
                     const searchRes = await fetch('/api/search', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
@@ -158,6 +158,8 @@ def render_page(posts):
                     resultArea.innerHTML += docsHtml;
                     resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">🐌 Ollama Cloud가 답변을 꼼꼼히 작성 중입니다. 잠시만 기다려주세요...</p>`;
 
+                    if (window.MathJax) {{ MathJax.typesetPromise([resultArea]); }}
+                    
                     // [STEP 2] 느린 답변 생성 (Ollama Cloud)
                     const genRes = await fetch('/api/generate', {{
                         method: 'POST',
@@ -171,9 +173,14 @@ def render_page(posts):
                     if (genData.error) {{
                         resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${{genData.error}}</p>`;
                     }} else {{
-                        resultArea.innerHTML += `<p style="white-space: pre-wrap; font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{genData.answer}}</p>`;
+                        resultArea.innerHTML += `<div style="white-space: pre-wrap; font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{genData.answer}}</div>`;                    
+                        
+                        if (window.MathJax) {{
+                            MathJax.typesetPromise([resultArea]).catch(function (err) {{
+                                console.error('MathJax 렌더링 에러:', err.message);
+                            }});
+                        }}
                     }}
-
                 }} catch (error) {{
                     resultArea.innerHTML += `<p style="color: red;">통신 중 에러가 발생했습니다: ${{error.message}}</p>`;
                 }} finally {{
