@@ -1,12 +1,14 @@
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 from datetime import datetime, timedelta, timezone
+import traceback
 
-# 하이브리드 AI 라이브러리 추가
+# AI 라이브러리
 from google import genai
 from google.genai import types
 from ollama import Client as OllamaClient
@@ -19,23 +21,20 @@ app = FastAPI()
 # ---------------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# (1) Supabase 설정 (직접 입력)
 SUPABASE_URL = "https://zdthschzdnshnnhtdrbc.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpkdGhzY2h6ZG5zaG5uaHRkcmJjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwNjMwOTgsImV4cCI6MjA5MDYzOTA5OH0.7cyBUlTrU1azmWr-5xKzSCseLplX5oLIeFPOS3YbwJM"
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# (2) Gemini API 설정 (임베딩용 - Render 환경변수 사용)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "여기에_로컬_테스트용_키_입력가능")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# (3) Ollama Cloud API 설정 (대화용 - Render 환경변수 사용)
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "여기에_로컬_테스트용_키_입력가능")
 ollama_client = OllamaClient(
     host="https://ollama.com",
     headers={'Authorization': f'Bearer {OLLAMA_API_KEY}'}
 )
 
-CHAT_MODEL = "glm-5.1:cloud" # Ollama Cloud 대화형 모델
+CHAT_MODEL = "glm-5.1:cloud"
 
 # ---------------------------------------------------------
 # 2. 방명록 DB 설정
@@ -57,10 +56,17 @@ class Post(Base):
 
 Base.metadata.create_all(bind=engine)
 
+class SearchRequest(BaseModel):
+    question: str
+
+class GenerateRequest(BaseModel):
+    question: str
+    context: str
+
 # ---------------------------------------------------------
-# 3. HTML 렌더링 함수
+# 3. HTML 렌더링
 # ---------------------------------------------------------
-def render_page(posts, ai_answer="", ai_context="", user_question=""):
+def render_page(posts):
     posts_list = ""
     for p in posts:
         posts_list += f"""
@@ -74,21 +80,6 @@ def render_page(posts, ai_answer="", ai_context="", user_question=""):
         </li>
         """
     
-    ai_section = ""
-    if ai_answer:
-        ai_section = f"""
-        <div style="background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin-top: 20px; border-left: 5px solid #2196F3;">
-            <h3 style="margin-top: 0; color: #1565C0;">🤖 하이브리드 연구 비서 ({CHAT_MODEL})</h3>
-            <p style="color: #555;"><strong>Q: {user_question}</strong></p>
-            <p style="white-space: pre-wrap; font-size: 15px; line-height: 1.6;">{ai_answer}</p>
-            
-            <details style="margin-top: 15px;">
-                <summary style="cursor: pointer; color: #888; font-size: 13px;">참고한 내 노트 원문 보기</summary>
-                <div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 12px; color: #555; white-space: pre-wrap;">{ai_context}</div>
-            </details>
-        </div>
-        """
-
     return f"""
     <html>
         <head>
@@ -100,18 +91,20 @@ def render_page(posts, ai_answer="", ai_context="", user_question=""):
             <h1 style="text-align: center; color: #333;">낙준의 개인 지식 베이스</h1>
             
             <div style="background: white; border: 2px solid #2196F3; padding: 20px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h2 style="margin-top: 0; color: #2196F3;">🔍 내 연구 노트 AI 검색</h2>
-                <form action="/ask" method="post" style="display: flex; gap: 10px;">
-                    <input type="text" name="question" placeholder="예: Perfect Information의 정의가 뭐야?" required style="flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;">
-                    <button type="submit" style="padding: 10px 20px; background-color: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">물어보기</button>
+                <h2 style="margin-top: 0; color: #2196F3;">내 연구 노트 내 검색</h2>
+                <form id="askForm" onsubmit="askAI(event)" style="display: flex; gap: 10px;">
+                    <input type="text" id="questionInput" placeholder="" required style="flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;">
+                    <button type="submit" id="askBtn" style="padding: 10px 20px; background-color: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">검색</button>
                 </form>
-                {ai_section}
+
+                <div id="ai-result-area" style="display: none; background-color: #f0f7ff; paddiing 20px; border-radius: 8px; margin-top: 20px; border-left: 5px solid #2196F3;">
+                </div>
             </div>
 
             <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h2 style="margin-top: 0; color: #4CAF50;">📝 문의사항 / 방명록</h2>
+                <h2 style="margin-top: 0; color: #4CAF50;"> 문의사항 </h2>
                 <form action="/post" method="post" style="display: flex; gap: 10px; margin-bottom: 20px;">
-                    <input type="text" name="content" placeholder="방명록이나 문의사항을 남겨주세요" required style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+                    <input type="text" name="content" placeholder="문의사항을 남겨주세요" required style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
                     <input type="password" name="password" placeholder="비밀번호" required style="width: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
                     <button type="submit" style="padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">등록</button>
                 </form>
@@ -119,6 +112,77 @@ def render_page(posts, ai_answer="", ai_context="", user_question=""):
                     {posts_list if posts else "<li style='color: gray; text-align: center;'>아직 등록된 문의사항이 없습니다.</li>"}
                 </ul>
             </div>
+
+            <script>
+            async function askAI(event) {{
+                event.preventDefault();
+                
+                const question = document.getElementById('questionInput').value;
+                const resultArea = document.getElementById('ai-result-area');
+                const askBtn = document.getElementById('askBtn');
+                
+                // 검색 시작 전 UI 초기화
+                askBtn.disabled = true;
+                askBtn.style.backgroundColor = 'gray';
+                resultArea.style.display = 'block';
+                resultArea.innerHTML = `
+                    <h3 style="margin-top: 0; color: #1565C0;">🔍 질문: ${{question}}</h3>
+                    <p style="color: #666; font-weight: bold;">⚡ Gemini API로 관련 노트를 빠르게 찾는 중...</p>
+                `;
+
+                try {{
+                    // [STEP 1] 빠른 검색 (Gemini + Supabase)
+                    const searchRes = await fetch('/api/search', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ question: question }})
+                    }});
+                    const searchData = await searchRes.json();
+
+                    if (!searchData.docs || searchData.docs.length === 0) {{
+                        resultArea.innerHTML += `<p style="color: red;">관련된 노트를 찾을 수 없습니다.</p>`;
+                        askBtn.disabled = false;
+                        askBtn.style.backgroundColor = '#2196F3';
+                        return;
+                    }}
+
+                    // 검색된 문서 화면에 먼저 보여주기
+                    let contextText = "";
+                    let docsHtml = `<div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 13px;"><strong>📚 참고할 노트 발견 완료!</strong><ul>`;
+                    searchData.docs.forEach((doc, idx) => {{
+                        docsHtml += `<li>${{doc.file_name}}</li>`;
+                        contextText += `[참고문헌 ${{idx+1}} - ${{doc.file_name}}]\\n${{doc.content}}\\n\\n`;
+                    }});
+                    docsHtml += `</ul></div>`;
+                    
+                    resultArea.innerHTML += docsHtml;
+                    resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">🐌 Ollama Cloud가 답변을 꼼꼼히 작성 중입니다. 잠시만 기다려주세요...</p>`;
+
+                    // [STEP 2] 느린 답변 생성 (Ollama Cloud)
+                    const genRes = await fetch('/api/generate', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ question: question, context: contextText }})
+                    }});
+                    const genData = await genRes.json();
+
+                    // 로딩 문구 지우고 최종 답변 표시
+                    document.getElementById('ai-loading').style.display = 'none';
+                    if (genData.error) {{
+                        resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${{genData.error}}</p>`;
+                    }} else {{
+                        resultArea.innerHTML += `<p style="white-space: pre-wrap; font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{genData.answer}}</p>`;
+                    }}
+
+                }} catch (error) {{
+                    resultArea.innerHTML += `<p style="color: red;">통신 중 에러가 발생했습니다: ${{error.message}}</p>`;
+                }} finally {{
+                    // 버튼 원상복구
+                    askBtn.disabled = false;
+                    askBtn.style.backgroundColor = '#2196F3';
+                }}
+            }}
+            </script>
         </body>
     </html>
     """
@@ -133,50 +197,46 @@ def read_root():
     db.close()
     return render_page(posts)
 
-@app.post("/ask", response_class=HTMLResponse)
-def ask_ai(question: str = Form(...)):
+# [API 1] 검색 전용 엔드포인트 (빠름)
+@app.post("/api/search")
+async def api_search(request: SearchRequest):
     try:
-        # 1. Gemini 임베딩 (3072차원)
+        # Gemini 3072차원 임베딩
         result = gemini_client.models.embed_content(
             model="gemini-embedding-001",
-            contents=question,
+            contents=request.question,
             config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
         )
         question_embedding = result.embeddings[0].values
         
-        # 2. Supabase 검색
+        # Supabase 검색
         response = supabase.rpc("match_notes", {
             "query_embedding": question_embedding,
             "match_threshold": 0.3, 
             "match_count": 3
         }).execute()
         
-        retrieved_docs = response.data
-        context_text = ""
-        if retrieved_docs:
-            for i, doc in enumerate(retrieved_docs):
-                context_text += f"[참고 {i+1}] {doc['content']}\n\n"
-
-        ai_response = ollama_client.chat(model=CHAT_MODEL, messages=[
-            {"role": "system", "content": f"낙준의 비서입니다. 참고: {context_text}"},
-            {"role": "user", "content": question}
-        ])
-        answer = ai_response['message']['content']
-
+        return {"docs": response.data}
     except Exception as e:
-        # 💡 여기가 핵심입니다! 에러가 나면 브라우저 화면에 에러 내용을 직접 뿌립니다.
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"🚨 에러 발생: {error_details}")
-        answer = f"AI 엔진 에러 발생!\n내용: {str(e)}\n\n모델명 '{CHAT_MODEL}'이 올바른 모델 이름인지 확인해 주세요."
-        context_text = "상세 에러 로그:\n" + error_details
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-    db = SessionLocal()
-    posts = db.query(Post).order_by(Post.id.desc()).all()
-    db.close()
+# [API 2] 답변 생성 전용 엔드포인트 (느림)
+@app.post("/api/generate")
+async def api_generate(request: GenerateRequest):
+    try:
+        system_prompt = f"당신은 경제학 연구자의 비서입니다. 아래 [참고문헌]을 바탕으로 한국어로 답하세요.\n\n[참고문헌]\n{request.context}"
+        
+        ai_response = ollama_client.chat(model=CHAT_MODEL, messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request.question}
+        ])
+        
+        return {"answer": ai_response['message']['content']}
+    except Exception as e:
+        error_msg = traceback.format_exc()
+        print(f"🚨 생성 에러: {error_msg}")
+        return {"error": str(e)}
     
-    return render_page(posts, ai_answer=answer, ai_context=context_text, user_question=question)
-
 @app.post("/post")
 def create_post(content: str = Form(...), password: str = Form(...)):
     db = SessionLocal()
