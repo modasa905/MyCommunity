@@ -1,15 +1,16 @@
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+
 import os
 from datetime import datetime, timedelta, timezone
 import traceback
 from dotenv import load_dotenv
-load_dotenv()
-import html
 import random
 
 # AI 라이브러리
@@ -19,10 +20,12 @@ from ollama import Client as OllamaClient
 from supabase import create_client, Client as SupabaseClient
 
 app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
 # ---------------------------------------------------------
 # 1. 환경 변수 및 하이브리드 AI 설정
 # ---------------------------------------------------------
+load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -78,197 +81,19 @@ class GenerateRequest(BaseModel):
     context: str
 
 # ---------------------------------------------------------
-# 3. HTML 렌더링
-# ---------------------------------------------------------
-def render_page(posts, drafts=None):
-    posts_list = ""
-    for p in posts:
-        posts_list += f"""
-        <li style="margin-bottom: 15px; padding: 10px; background: #fff; border-radius: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-            <span style="color: gray; font-size: 13px; margin-right: 10px;">[{p.created_at}]</span>
-            <span style="font-size: 16px;">{p.content}</span>
-            <form action="/delete/{p.id}" method="post" style="display:inline; float:right;">
-                <input type="password" name="password" placeholder="비밀번호" required style="width: 70px; padding: 2px;">
-                <button type="submit" style="color:white; background-color:#ff4d4d; border:none; border-radius:3px; padding: 3px 6px; cursor:pointer;">삭제</button>
-            </form>
-        </li>
-        """
-    
-    return f"""
-    <html>
-        <head>
-            <meta charset="utf-8">
-            <title>낙준의 공부 게시판</title>
-            <style>body {{ max-width: 800px; margin: 0 auto; padding: 20px; font-family: 'Apple SD Gothic Neo', sans-serif; background-color: #fafafa; }}</style>
-            
-            <script>
-                window.MathJax = {{
-                    tex: {{
-                        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-                        displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
-                    }},
-                    startup: {{
-                        typeset: false
-                    }}
-                }};
-            </script>
-            <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
-            <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-        </head>
-        <body>
-            <h1 style="text-align: center; color: #333;">낙준의 개인 지식 베이스</h1>
-            
-            <div style="background: white; border: 2px solid #2196F3; padding: 20px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h2 style="margin-top: 0; color: #2196F3;">내 연구 노트에서 검색</h2>
-                <form id="askForm" onsubmit="askAI(event)" style="display: flex; gap: 10px;">
-                    <input type="text" id="questionInput" placeholder="" required style="flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;">
-                    <button type="submit" id="askBtn" style="padding: 10px 20px; background-color: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">검색</button>
-                </form>
-                
-                <div id="ai-result-area" style="display: none; background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin-top: 20px; border-left: 5px solid #2196F3;">
-                </div>
-            </div>
-
-            <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h2 style="margin-top: 0; color: #4CAF50;">문의사항</h2>
-                <form action="/post" method="post" style="display: flex; gap: 10px; margin-bottom: 20px;">
-                    <input type="text" name="content" placeholder="문의사항을 남겨주세요" required style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
-                    <input type="password" name="password" placeholder="비밀번호" required style="width: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
-                    <button type="submit" style="padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">등록</button>
-                </form>
-                <ul style="list-style-type: none; padding-left: 0;">
-                    {posts_list if posts else "<li style='color: gray; text-align: center;'>아직 등록된 문의사항이 없습니다.</li>"}
-                </ul>
-            </div>
-
-            <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 30px; border-left: 5px solid #9C27B0;">
-                <h2 style="margin-top: 0; color: #9C27B0;">검토가 필요한 새 노트</h2>
-                <ul style="list-style-type: none; padding-left: 0;">
-                    {"" if drafts else "<li style='color: gray;'>아직 생성된 아이디어 노트가 없습니다.</li>"}
-                    {"".join([f'''
-                    <li style="margin-bottom: 20px; padding: 15px; background: #f3e5f5; border-radius: 5px;">
-                        <span style="color: #6a1b9a; font-size: 13px; font-weight: bold;">[{d.created_at}] 출처: {d.source_file}</span>
-                        <div class="draft-content" style="margin-top: 10px; font-size: 15px; line-height: 1.6;" data-raw="{html.escape(d.content)}">
-                        </div>
-                    </li>
-                    ''' for d in (drafts or [])])}
-                </ul>
-            </div>
-
-            <script>
-            async function askAI(event) {{
-                event.preventDefault();
-                
-                const question = document.getElementById('questionInput').value;
-                const resultArea = document.getElementById('ai-result-area');
-                const askBtn = document.getElementById('askBtn');
-                
-                askBtn.disabled = true;
-                askBtn.style.backgroundColor = 'gray';
-                resultArea.style.display = 'block';
-                resultArea.innerHTML = `<p style="color: #666; font-weight: bold;">관련 노트를 찾는 중...</p>`;
-
-                try {{
-                    const searchRes = await fetch('/api/search', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ question: question }})
-                    }});
-                    const searchData = await searchRes.json();
-
-                    if (!searchData.docs || searchData.docs.length === 0) {{
-                        resultArea.innerHTML += `<p style="color: red;">관련된 노트를 찾을 수 없습니다.</p>`;
-                        askBtn.disabled = false;
-                        askBtn.style.backgroundColor = '#2196F3';
-                        return;
-                    }}
-
-                    let contextText = "";
-                    let docsHtml = `<div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 13px;"><strong>참고할 노트 발견</strong><ul>`;
-                    searchData.docs.forEach((doc, idx) => {{
-                        docsHtml += `<li>${{doc.file_name}}</li>`;
-                        contextText += `[참고문헌 ${{idx+1}} - ${{doc.file_name}}]\\n${{doc.content}}\\n\\n`;
-                    }});
-                    docsHtml += `</ul></div>`;
-                    
-                    resultArea.innerHTML += docsHtml;
-                    resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">답변 작성 중...</p>`;
-
-                    if (window.MathJax) {{ MathJax.typesetPromise([resultArea]); }}
-
-                    const genRes = await fetch('/api/generate', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ question: question, context: contextText }})
-                    }});
-                    const genData = await genRes.json();
-
-                    document.getElementById('ai-loading').style.display = 'none';
-                    if (genData.error) {{
-                        resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${{genData.error}}</p>`;
-                    }} else {{
-                        // 🌟 인위적 조작 없이 순수 마크다운 파싱만 수행
-                        const formattedAnswer = marked.parse(genData.answer);
-                        resultArea.innerHTML += `<div style="font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{formattedAnswer}}</div>`;                        
-                        
-                        if (window.MathJax) {{
-                            MathJax.typesetPromise([resultArea]).catch(function (err) {{
-                                console.error('MathJax 렌더링 에러:', err.message);
-                            }});
-                        }}
-                    }}
-                }} catch (error) {{
-                    resultArea.innerHTML += `<p style="color: red;">통신 중 에러가 발생했습니다: ${{error.message}}</p>`;
-                }} finally {{
-                    askBtn.disabled = false;
-                    askBtn.style.backgroundColor = '#2196F3';
-                }}
-            }}
-            </script>
-
-            <script>
-            document.addEventListener("DOMContentLoaded", function() {{
-                // 🌟 마크다운 설정: 줄바꿈을 자연스럽게 처리하도록 옵션 추가
-                marked.setOptions({{
-                    breaks: true
-                }});
-
-                const drafts = document.querySelectorAll('.draft-content');
-                
-                drafts.forEach(draft => {{
-                    const rawText = draft.getAttribute('data-raw'); 
-                    if (rawText) {{                        
-                        // 🌟 인위적 조작 없이 순수 마크다운 파싱만 수행
-                        draft.innerHTML = marked.parse(rawText);
-                    }}
-                }});
-
-                function renderMath() {{
-                    if (window.MathJax && window.MathJax.typesetPromise) {{
-                        MathJax.typesetPromise().catch(function (err) {{
-                            console.error('MathJax 에러:', err.message);
-                        }});
-                    }} else {{
-                        setTimeout(renderMath, 100);
-                    }}
-                }}
-                renderMath();
-            }});
-            </script>
-        </body>
-    </html>
-    """
-
-# ---------------------------------------------------------
-# 4. 라우터 설정
+# 3. 라우터 설정
 # ---------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-def read_root():
+def read_root(request: Request):
     db = SessionLocal()
     posts = db.query(Post).order_by(Post.id.desc()).all()
     drafts = db.query(DraftNote).order_by(DraftNote.id.desc()).all()
     db.close()
-    return render_page(posts, drafts=drafts)
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "posts": posts,
+        "drafts": drafts
+    })
 
 # [API 1] 검색 전용 엔드포인트 (빠름)
 @app.post("/api/search")
