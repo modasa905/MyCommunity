@@ -241,13 +241,21 @@ async def vote_draft(draft_id: int, request: VoteRequest):
         db.close()
         return JSONResponse(status_code=404, content={"error": "노트를 찾을 수 없습니다."})
     
+    # 1. 점수 증감
     if request.action == "up":
         draft.upvotes += 1
     elif request.action == "down":
         draft.upvotes -= 1
         
+    # 2. 삭제 조건 검사
+    if draft.upvotes < -5:
+        db.delete(draft) # DB에서 행 삭제
+        db.commit()
+        db.close()
+        return {"deleted": True} # 삭제되었다는 신호만 보냄
+        
     db.commit()
     new_votes = draft.upvotes
     db.close()
     
-    return {"upvotes": new_votes}
+    return {"deleted": False, "upvotes": new_votes}
