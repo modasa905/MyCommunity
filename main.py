@@ -10,6 +10,7 @@ import traceback
 from dotenv import load_dotenv
 load_dotenv()
 import html
+import random
 
 # AI 라이브러리
 from google import genai
@@ -37,7 +38,10 @@ ollama_client = OllamaClient(
     headers={'Authorization': f'Bearer {OLLAMA_API_KEY}'}
 )
 
+CRON_SECRET = os.getenv("CRON_SECRET") 
+
 CHAT_MODEL = "glm-5.1:cloud"
+DRAFT_MODEL = "gemini-3.1-flash-lite-preview"
 
 # ---------------------------------------------------------
 # 2. 방명록 DB 설정
@@ -57,6 +61,13 @@ class Post(Base):
     password = Column(String)
     created_at = Column(String, default=get_kst_now)
 
+class DraftNote(Base):
+    __tablename__ = "draft_notes"
+    id = Column(Integer, primary_key=True, index=True)
+    source_file = Column(String) # 영감을 준 원본 파일명
+    content = Column(String)     # AI가 새로 작성한 내용
+    created_at = Column(String, default=get_kst_now)
+
 Base.metadata.create_all(bind=engine)
 
 class SearchRequest(BaseModel):
@@ -69,7 +80,7 @@ class GenerateRequest(BaseModel):
 # ---------------------------------------------------------
 # 3. HTML 렌더링
 # ---------------------------------------------------------
-def render_page(posts):
+def render_page(posts, drafts=None):
     posts_list = ""
     for p in posts:
         posts_list += f"""
@@ -91,13 +102,13 @@ def render_page(posts):
             <style>body {{ max-width: 800px; margin: 0 auto; padding: 20px; font-family: 'Apple SD Gothic Neo', sans-serif; background-color: #fafafa; }}</style>
             
             <script>
-                MathJax = {{
+                window.MathJax = {{
                     tex: {{
                         inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
                         displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
                     }},
                     startup: {{
-                        typeset: false // 처음에는 수동으로 렌더링하도록 대기
+                        typeset: false
                     }}
                 }};
             </script>
@@ -130,6 +141,20 @@ def render_page(posts):
                 </ul>
             </div>
 
+            <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 30px; border-left: 5px solid #9C27B0;">
+                <h2 style="margin-top: 0; color: #9C27B0;">검토가 필요한 새 노트</h2>
+                <ul style="list-style-type: none; padding-left: 0;">
+                    {"" if drafts else "<li style='color: gray;'>아직 생성된 아이디어 노트가 없습니다.</li>"}
+                    {"".join([f'''
+                    <li style="margin-bottom: 20px; padding: 15px; background: #f3e5f5; border-radius: 5px;">
+                        <span style="color: #6a1b9a; font-size: 13px; font-weight: bold;">[{d.created_at}] 출처: {d.source_file}</span>
+                        <div class="draft-content" style="margin-top: 10px; font-size: 15px; line-height: 1.6;" data-raw="{html.escape(d.content)}">
+                        </div>
+                    </li>
+                    ''' for d in (drafts or [])])}
+                </ul>
+            </div>
+
             <script>
             async function askAI(event) {{
                 event.preventDefault();
@@ -141,12 +166,9 @@ def render_page(posts):
                 askBtn.disabled = true;
                 askBtn.style.backgroundColor = 'gray';
                 resultArea.style.display = 'block';
-                resultArea.innerHTML = `
-                    <p style="color: #666; font-weight: bold;">관련 노트를 찾는 중...</p>
-                `;
+                resultArea.innerHTML = `<p style="color: #666; font-weight: bold;">관련 노트를 찾는 중...</p>`;
 
                 try {{
-                    // [STEP 1] 빠른 검색
                     const searchRes = await fetch('/api/search', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
@@ -172,10 +194,8 @@ def render_page(posts):
                     resultArea.innerHTML += docsHtml;
                     resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">답변 작성 중...</p>`;
 
-                    // 🌟 추가됨 2-1: 검색된 참고문헌 목록도 수식이 있을 수 있으니 미리 렌더링
                     if (window.MathJax) {{ MathJax.typesetPromise([resultArea]); }}
 
-                    // [STEP 2] 느린 답변 생성
                     const genRes = await fetch('/api/generate', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
@@ -187,17 +207,16 @@ def render_page(posts):
                     if (genData.error) {{
                         resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${{genData.error}}</p>`;
                     }} else {{
+                        // 🌟 인위적 조작 없이 순수 마크다운 파싱만 수행
                         const formattedAnswer = marked.parse(genData.answer);
                         resultArea.innerHTML += `<div style="font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{formattedAnswer}}</div>`;                        
-                       
-                       // 🌟 추가됨 2-2: AI 답변이 화면에 찍힌 직후, MathJax에게 "여기 수식 예쁘게 그려줘!" 명령
+                        
                         if (window.MathJax) {{
                             MathJax.typesetPromise([resultArea]).catch(function (err) {{
                                 console.error('MathJax 렌더링 에러:', err.message);
                             }});
                         }}
                     }}
-
                 }} catch (error) {{
                     resultArea.innerHTML += `<p style="color: red;">통신 중 에러가 발생했습니다: ${{error.message}}</p>`;
                 }} finally {{
@@ -205,6 +224,36 @@ def render_page(posts):
                     askBtn.style.backgroundColor = '#2196F3';
                 }}
             }}
+            </script>
+
+            <script>
+            document.addEventListener("DOMContentLoaded", function() {{
+                // 🌟 마크다운 설정: 줄바꿈을 자연스럽게 처리하도록 옵션 추가
+                marked.setOptions({{
+                    breaks: true
+                }});
+
+                const drafts = document.querySelectorAll('.draft-content');
+                
+                drafts.forEach(draft => {{
+                    const rawText = draft.getAttribute('data-raw'); 
+                    if (rawText) {{                        
+                        // 🌟 인위적 조작 없이 순수 마크다운 파싱만 수행
+                        draft.innerHTML = marked.parse(rawText);
+                    }}
+                }});
+
+                function renderMath() {{
+                    if (window.MathJax && window.MathJax.typesetPromise) {{
+                        MathJax.typesetPromise().catch(function (err) {{
+                            console.error('MathJax 에러:', err.message);
+                        }});
+                    }} else {{
+                        setTimeout(renderMath, 100);
+                    }}
+                }}
+                renderMath();
+            }});
             </script>
         </body>
     </html>
@@ -217,8 +266,9 @@ def render_page(posts):
 def read_root():
     db = SessionLocal()
     posts = db.query(Post).order_by(Post.id.desc()).all()
+    drafts = db.query(DraftNote).order_by(DraftNote.id.desc()).all()
     db.close()
-    return render_page(posts)
+    return render_page(posts, drafts=drafts)
 
 # [API 1] 검색 전용 엔드포인트 (빠름)
 @app.post("/api/search")
@@ -255,15 +305,78 @@ async def api_generate(request: GenerateRequest):
         ])
         
         raw_answer = ai_response['message']['content']
-        safe_answer = html.escape(raw_answer)
-
-        return {"answer": safe_answer}
+        return {"answer": raw_answer}
     
     except Exception as e:
         error_msg = traceback.format_exc()
         print(f"🚨 생성 에러: {error_msg}")
         return {"error": str(e)}
+
+CRON_SECRET = os.getenv("CRON_SECRET") 
+
+@app.get("/api/generate-daily-draft")
+async def generate_daily_draft(secret: str = ""):
+    # 1. 보안 검증
+    if secret != CRON_SECRET:
+        return JSONResponse(status_code=401, content={"error": "접근 권한이 없습니다."})
+
+    try:
+        # 2. Supabase에서 랜덤으로 노트 하나 뽑기
+        response = supabase.table("obsidian_notes").select("*").execute()
+        if not response.data:
+            return {"status": "error", "message": "도서관에 책이 없습니다."}
+        
+        random_doc = random.choice(response.data)
+        
+        prompt = f"""You are an expert research assistant specializing in advanced economics and mathematics.
+        Based on the concepts in the [Original Note] below, generate a new document that explores advanced mathematical/economic applications, theoretical extensions, or novel academic insights.
+        
+        The output MUST be written entirely in professional, academic English.
+        You MUST strictly follow the exact structure below. Do not add any conversational filler.
+
+        [Part 1]
+        Title: (Provide a descriptive filename, e.g., Advanced_Optimal_Taxation.md)
+        Explanation: (Briefly explain the core idea of this new note in plain text. Do NOT use markdown format here.)
+
+
+
+        [Part 2]
+        (Write the complete document here. This section must be written in pure Markdown format, ready to be added directly to a database. Use appropriate headers, and LaTeX for math enclosed in $ or $$. Do NOT wrap this section in ```markdown code blocks.)
+        
+        ***
+        (Append a metadata section (Parent Path, Sequence, Related Notes, and Source) that exactly mirrors the formatting of the [Original Note]. Thoughtfully adapt the links to fit this new extension.)
+        
+        [Original Note: {random_doc['file_name']}]
+        {random_doc['content']}
+        """
+        
+        ai_response = gemini_client.models.generate_content(
+            model=DRAFT_MODEL,
+            contents=prompt
+        )
+        
+        full_content = ""
+        if ai_response.candidates and ai_response.candidates[0].content.parts:
+            for part in ai_response.candidates[0].content.parts:
+                if part.text:
+                    full_content += part.text
+        
+        # 4. 작성된 글을 임시 보관함(DraftNote)에 저장
+        db = SessionLocal()
+        new_draft = DraftNote(
+            source_file=random_doc['file_name'],
+            content=full_content
+        )
+        db.add(new_draft)
+        db.commit()
+        db.close()
+        
+        return RedirectResponse(url="/", status_code=303)
     
+    except Exception as e:
+        print(f"🚨 새벽 자동화 에러: {e}")
+        return {"error": str(e)}
+
 @app.post("/post")
 def create_post(content: str = Form(...), password: str = Form(...)):
     db = SessionLocal()

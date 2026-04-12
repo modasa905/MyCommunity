@@ -63,7 +63,7 @@ def get_gemini_embedding(text):
 if __name__ == "__main__":
     print("🚀 하이브리드 지식 베이스 구축을 시작합니다...\n")
     
-    print("🧹 기존 데이터를 초기화합니다... (Nomic -> Gemini 지도 교체)")
+    print("🧹 기존 데이터를 초기화합니다... ")
     supabase.table("obsidian_notes").delete().neq("id", 0).execute()
     
     all_files = get_all_md_files(OBSIDIAN_VAULT_PATH)
