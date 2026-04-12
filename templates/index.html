@@ -28,8 +28,12 @@
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     </head>
     <body>
-        <h1 style="text-align: center; color: #333;">낙준의 개인 지식 베이스</h1>
-        
+        <h1 style="text-align: center; color: #333;">EconNotes</h1>
+        <div style="text-align: center; margin-bottom: 20px;">
+            <span style="background-color: #e3f2fd; color: #1976d2; padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid #bbdefb;">
+        저장된 노트: {{ total_notes }}개
+            </span>
+        </div>
         <div style="background: white; border: 2px solid #2196F3; padding: 20px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
             <h2 style="margin-top: 0; color: #2196F3;">내 연구 노트에서 검색</h2>
             <form id="askForm" onsubmit="askAI(event)" style="display: flex; gap: 10px;">

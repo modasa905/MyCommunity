@@ -43,8 +43,9 @@ ollama_client = OllamaClient(
 
 CRON_SECRET = os.getenv("CRON_SECRET") 
 
-CHAT_MODEL = "glm-5.1:cloud"
-DRAFT_MODEL = "gemini-3.1-flash-lite-preview"
+CHAT_MODEL = os.getenv("CHAT_MODEL")
+DRAFT_MODEL = os.getenv("DRAFT_MODEL")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 
 # ---------------------------------------------------------
 # 2. 방명록 DB 설정
@@ -94,12 +95,19 @@ def read_root(request: Request):
     posts = db.query(Post).order_by(Post.id.desc()).all()
     drafts = db.query(DraftNote).order_by(DraftNote.id.desc()).all()
     db.close()
+    
+    response = supabase.table("obsidian_notes").select("file_name").execute()
+    
+    unique_files = set(item['file_name'] for item in response.data)
+    total_notes = len(unique_files)
+    
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-        "posts": posts,
-        "drafts": drafts
+            "posts": posts,
+            "drafts": drafts,
+            "total_notes": total_notes  # 이제 뻥튀기 없는 진짜 문서 개수가 넘어갑니다!
         }
     )
 
@@ -109,7 +117,7 @@ async def api_search(request: SearchRequest):
     try:
         # Gemini 3072차원 임베딩
         result = gemini_client.models.embed_content(
-            model="gemini-embedding-001",
+            model=EMBEDDING_MODEL,
             contents=request.question,
             config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
         )
