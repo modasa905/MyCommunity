@@ -89,26 +89,42 @@ class VoteRequest(BaseModel):
 # ---------------------------------------------------------
 # 3. 라우터 설정
 # ---------------------------------------------------------
+# 1. 메인 페이지
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
-    db = SessionLocal()
-    posts = db.query(Post).order_by(Post.id.desc()).all()
-    drafts = db.query(DraftNote).order_by(DraftNote.id.desc()).all()
-    db.close()
-    
+    # 검색용 지식 개수만 가져옵니다.
     response = supabase.table("obsidian_notes").select("file_name").execute()
-    
     unique_files = set(item['file_name'] for item in response.data)
     total_notes = len(unique_files)
     
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={
-            "posts": posts,
-            "drafts": drafts,
-            "total_notes": total_notes  # 이제 뻥튀기 없는 진짜 문서 개수가 넘어갑니다!
-        }
+        context={"total_notes": total_notes}
+    )
+
+# 2. 커뮤니티 페이지
+@app.get("/community", response_class=HTMLResponse) # URL을 /community로 변경
+def read_community(request: Request):
+    db = SessionLocal()
+    posts = db.query(Post).order_by(Post.id.desc()).all()
+    db.close()
+    return templates.TemplateResponse(
+        request=request, 
+        name="community.html", # 파일명 업데이트
+        context={"posts": posts}
+    )
+
+# 3. Drafts 페이지
+@app.get("/drafts", response_class=HTMLResponse)
+def read_drafts(request: Request):
+    db = SessionLocal()
+    drafts = db.query(DraftNote).order_by(DraftNote.id.desc()).all()
+    db.close()
+    return templates.TemplateResponse(
+        request=request, 
+        name="drafts.html", 
+        context={"drafts": drafts}
     )
 
 # [API 1] 검색 전용 엔드포인트 (빠름)

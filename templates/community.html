@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>Community - EconNotes</title>
+        <style>
+            body { 
+                max-width: 800px; 
+                margin: 0 auto; 
+                padding: 20px; 
+                font-family: 'Apple SD Gothic Neo', sans-serif; 
+                background-color: #fafafa; 
+            }
+        </style>
+    </head>
+    <body>
+        <div style="margin-bottom: 20px;">
+            <nav style="text-align: right;">
+                <a href="/" style="margin-left: 15px; text-decoration: none; color: #2196F3; font-weight: bold;">Home</a>
+                <a href="/community" style="margin-left: 15px; text-decoration: none; color: #4CAF50; font-weight: bold;">Community</a>
+                <a href="/drafts" style="margin-left: 15px; text-decoration: none; color: #6a1b9a; font-weight: bold;">Draft Review</a>
+            </nav>
+        </div>
+
+        <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+            <h2 style="margin-top: 0; color: #4CAF50;">Community</h2>
+            
+            <form action="/post" method="post" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                <input type="text" name="content" placeholder="Share your thoughts..." required style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+                <input type="password" name="password" placeholder="Password" required style="width: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+                <button type="submit" style="padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">Post</button>
+            </form>
+            
+            <ul style="list-style-type: none; padding-left: 0;">
+                {% if posts %}
+                    {% for p in posts %}
+                    <li style="margin-bottom: 15px; padding: 10px; background: #fff; border-radius: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: auto;">
+                        <span style="color: gray; font-size: 13px; margin-right: 10px;">[{{ p.created_at }}]</span>
+                        <span style="font-size: 16px;">{{ p.content }}</span>
+                        
+                        <form action="/delete/{{ p.id }}" method="post" style="display:inline; float:right;">
+                            <input type="password" name="password" placeholder="Password" required style="width: 70px; padding: 2px;">
+                            <button type="submit" style="color:white; background-color:#ff4d4d; border:none; border-radius:3px; padding: 3px 6px; cursor:pointer;">Delete</button>
+                        </form>
+                    </li>
+                    {% endfor %}
+                {% else %}
+                    <li style='color: gray; text-align: center;'>No posts registered yet.</li>
+                {% endif %}
+            </ul>
+        </div>
+    </body>
+</html>

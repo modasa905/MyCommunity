@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Draft Review</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f4f7f9;
+            color: #2d3436;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 40px;
+            border-bottom: 2px solid #f1f2f6;
+            padding-bottom: 24px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 28px;
+            color: #6c5ce7;
+            letter-spacing: -0.5px;
+        }
+        .back-link {
+            text-decoration: none;
+            color: #636e72;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+            padding: 8px 12px;
+            border-radius: 8px;
+        }
+        .back-link:hover {
+            background-color: #f1f2f6;
+            color: #6c5ce7;
+        }
+        .draft-list {
+            list-style: none;
+            padding: 0;
+        }
+        .draft-item {
+            margin-bottom: 30px;
+            padding: 24px;
+            background: #ffffff;
+            border: 1px solid #f1f2f6;
+            border-radius: 12px;
+            transition: opacity 0.5s ease;
+        }
+        .draft-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .source-meta {
+            color: #6c5ce7;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        /* Voting Controller */
+        .vote-control {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            background: #f8f9fa;
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: 1px solid #edf2f7;
+        }
+        .vote-btn {
+            cursor: pointer;
+            background: none;
+            border: none;
+            font-size: 18px;
+            transition: transform 0.1s;
+        }
+        .vote-btn:active {
+            transform: scale(1.2);
+        }
+        .vote-count {
+            font-weight: 800;
+            font-size: 15px;
+            color: #2d3436;
+            min-width: 20px;
+            text-align: center;
+        }
+        /* Suggestion Box */
+        .suggestion-box {
+            background: #f1f2f6;
+            padding: 20px;
+            border-radius: 10px;
+            font-size: 15px;
+            color: #000;
+            text-align: left;
+            white-space: pre-line;
+            margin-bottom: 20px;
+            border-left: 4px solid #6c5ce7;
+        }
+        /* Main Content */
+        .draft-content {
+            font-size: 16px;
+            line-height: 1.8;
+            padding-top: 20px;
+            border-top: 1px dashed #dfe6e9;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 80px 0;
+            color: #b2bec3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav style="text-align: right; margin-bottom: 20px;">
+            <a href="/" style="margin-left: 15px; text-decoration: none; color: #2196F3; font-weight: bold;">Home</a>
+            <a href="/community" style="margin-left: 15px; text-decoration: none; color: #4CAF50; font-weight: bold;">Community</a>
+            <a href="/drafts" style="margin-left: 15px; text-decoration: none; color: #6a1b9a; font-weight: bold;">Draft Review</a>
+        </nav>
+
+    <div class="header">
+        <h1>Draft Review</h1>
+    </div>
+    
+        <ul class="draft-list">
+            {% if drafts %}
+                {% for d in drafts %}
+                <li id="draft-item-{{ d.id }}" class="draft-item">
+                    <div class="draft-header">
+                        <span class="source-meta">[{{ d.created_at }}] Source: {{ d.source_file }}</span>
+                        
+                        <div class="vote-control">
+                            <button onclick="voteDraft({{ d.id }}, 'up')" class="vote-btn" title="Upvote">👍</button>
+                            <span id="vote-count-{{ d.id }}" class="vote-count">{{ d.upvotes }}</span>
+                            <button onclick="voteDraft({{ d.id }}, 'down')" class="vote-btn" title="Downvote">👎</button>
+                        </div>
+                    </div>
+                    
+                    <div class="suggestion-box">
+                        {{ d.suggestion }}
+                    </div>
+
+                    <div class="draft-content" data-raw="{{ d.content | forceescape }}">
+                        </div>
+                </li>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <span style="font-size: 48px; display: block; margin-bottom: 16px;">⏳</span>
+                    <p>No new drafts are available for review.</p>
+                </div>
+            {% endif %}
+        </ul>
+    </div>
+
+    <script>
+        // 1. Math Protection Logic (@@)
+        function parseMarkdownProtectMath(text) {
+            let safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const mathBlocks = [];
+            let count = 0;
+
+            safeText = safeText.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                mathBlocks.push(match);
+                return `@@MATH_BLOCK_${count++}@@`;
+            });
+
+            safeText = safeText.replace(/\$([^\$\n]+?)\$/g, (match) => {
+                mathBlocks.push(match);
+                return `@@MATH_BLOCK_${count++}@@`;
+            });
+
+            let htmlContent = marked.parse(safeText);
+
+            mathBlocks.forEach((block, index) => {
+                htmlContent = htmlContent.replace(`@@MATH_BLOCK_${index}@@`, () => block);
+            });
+
+            return htmlContent;
+        }
+
+        // 2. Voting & Auto-Delete Logic
+        async function voteDraft(draftId, action) {
+            try {
+                const res = await fetch(`/api/vote/${draftId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action })
+                });
+                
+                const data = await res.json();
+                
+                if (data.deleted) {
+                    alert("This draft has been discarded due to low ratings. It will disappear on next refresh.");
+                    const el = document.getElementById(`draft-item-${draftId}`);
+                    if(el) {
+                        el.style.opacity = "0.3";
+                        el.style.pointerEvents = "none";
+                    }
+                } else if (data.upvotes !== undefined) {
+                    document.getElementById(`vote-count-${draftId}`).innerText = data.upvotes;
+                }
+            } catch (error) {
+                console.error("Voting error:", error);
+            }
+        }
+
+        // 3. Initial Rendering
+        document.addEventListener("DOMContentLoaded", function() {
+            marked.setOptions({ breaks: true });
+            const drafts = document.querySelectorAll('.draft-content');
+            
+            drafts.forEach(draft => {
+                const rawText = draft.getAttribute('data-raw'); 
+                if (rawText) { draft.innerHTML = parseMarkdownProtectMath(rawText); }
+            });
+
+            function renderMath() {
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    MathJax.typesetPromise().catch(err => console.error(err));
+                } else {
+                    setTimeout(renderMath, 100);
+                }
+            }
+            renderMath();
+        });
+    </script>
+</body>
+</html>
