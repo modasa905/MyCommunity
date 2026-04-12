@@ -7,6 +7,9 @@ from sqlalchemy.orm import sessionmaker
 import os
 from datetime import datetime, timedelta, timezone
 import traceback
+from dotenv import load_dotenv
+load_dotenv()
+import html
 
 # AI 라이브러리
 from google import genai
@@ -21,14 +24,14 @@ app = FastAPI()
 # ---------------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-SUPABASE_URL = "https://zdthschzdnshnnhtdrbc.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpkdGhzY2h6ZG5zaG5uaHRkcmJjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwNjMwOTgsImV4cCI6MjA5MDYzOTA5OH0.7cyBUlTrU1azmWr-5xKzSCseLplX5oLIeFPOS3YbwJM"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "여기에_로컬_테스트용_키_입력가능")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "여기에_로컬_테스트용_키_입력가능")
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 ollama_client = OllamaClient(
     host="https://ollama.com",
     headers={'Authorization': f'Bearer {OLLAMA_API_KEY}'}
@@ -84,25 +87,39 @@ def render_page(posts):
     <html>
         <head>
             <meta charset="utf-8">
-            <title>낙준의 연구 & 문의 게시판</title>
+            <title>낙준의 공부 게시판</title>
             <style>body {{ max-width: 800px; margin: 0 auto; padding: 20px; font-family: 'Apple SD Gothic Neo', sans-serif; background-color: #fafafa; }}</style>
+            
+            <script>
+                MathJax = {{
+                    tex: {{
+                        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+                        displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
+                    }},
+                    startup: {{
+                        typeset: false // 처음에는 수동으로 렌더링하도록 대기
+                    }}
+                }};
+            </script>
+            <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         </head>
         <body>
             <h1 style="text-align: center; color: #333;">낙준의 개인 지식 베이스</h1>
             
             <div style="background: white; border: 2px solid #2196F3; padding: 20px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h2 style="margin-top: 0; color: #2196F3;">내 연구 노트 내 검색</h2>
+                <h2 style="margin-top: 0; color: #2196F3;">내 연구 노트에서 검색</h2>
                 <form id="askForm" onsubmit="askAI(event)" style="display: flex; gap: 10px;">
                     <input type="text" id="questionInput" placeholder="" required style="flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;">
                     <button type="submit" id="askBtn" style="padding: 10px 20px; background-color: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">검색</button>
                 </form>
-
-                <div id="ai-result-area" style="display: none; background-color: #f0f7ff; paddiing 20px; border-radius: 8px; margin-top: 20px; border-left: 5px solid #2196F3;">
+                
+                <div id="ai-result-area" style="display: none; background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin-top: 20px; border-left: 5px solid #2196F3;">
                 </div>
             </div>
 
             <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h2 style="margin-top: 0; color: #4CAF50;"> 문의사항 </h2>
+                <h2 style="margin-top: 0; color: #4CAF50;">문의사항</h2>
                 <form action="/post" method="post" style="display: flex; gap: 10px; margin-bottom: 20px;">
                     <input type="text" name="content" placeholder="문의사항을 남겨주세요" required style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
                     <input type="password" name="password" placeholder="비밀번호" required style="width: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
@@ -121,13 +138,11 @@ def render_page(posts):
                 const resultArea = document.getElementById('ai-result-area');
                 const askBtn = document.getElementById('askBtn');
                 
-                // 검색 시작 전 UI 초기화
                 askBtn.disabled = true;
                 askBtn.style.backgroundColor = 'gray';
                 resultArea.style.display = 'block';
                 resultArea.innerHTML = `
-                    <h3 style="margin-top: 0; color: #1565C0;">🔍 질문: ${{question}}</h3>
-                    <p style="color: #666; font-weight: bold;">⚡ Gemini API로 관련 노트를 빠르게 찾는 중...</p>
+                    <p style="color: #666; font-weight: bold;">관련 노트를 찾는 중...</p>
                 `;
 
                 try {{
@@ -146,9 +161,8 @@ def render_page(posts):
                         return;
                     }}
 
-                    // 검색된 문서 화면에 먼저 보여주기
                     let contextText = "";
-                    let docsHtml = `<div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 13px;"><strong>📚 참고할 노트 발견 완료!</strong><ul>`;
+                    let docsHtml = `<div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 13px;"><strong>참고할 노트 발견</strong><ul>`;
                     searchData.docs.forEach((doc, idx) => {{
                         docsHtml += `<li>${{doc.file_name}}</li>`;
                         contextText += `[참고문헌 ${{idx+1}} - ${{doc.file_name}}]\\n${{doc.content}}\\n\\n`;
@@ -156,11 +170,12 @@ def render_page(posts):
                     docsHtml += `</ul></div>`;
                     
                     resultArea.innerHTML += docsHtml;
-                    resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">🐌 Ollama Cloud가 답변을 꼼꼼히 작성 중입니다. 잠시만 기다려주세요...</p>`;
+                    resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">답변 작성 중...</p>`;
 
+                    // 🌟 추가됨 2-1: 검색된 참고문헌 목록도 수식이 있을 수 있으니 미리 렌더링
                     if (window.MathJax) {{ MathJax.typesetPromise([resultArea]); }}
-                    
-                    // [STEP 2] 느린 답변 생성 (Ollama Cloud)
+
+                    // [STEP 2] 느린 답변 생성
                     const genRes = await fetch('/api/generate', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
@@ -168,23 +183,24 @@ def render_page(posts):
                     }});
                     const genData = await genRes.json();
 
-                    // 로딩 문구 지우고 최종 답변 표시
                     document.getElementById('ai-loading').style.display = 'none';
                     if (genData.error) {{
                         resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${{genData.error}}</p>`;
                     }} else {{
-                        resultArea.innerHTML += `<div style="white-space: pre-wrap; font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{genData.answer}}</div>`;                    
-                        
+                        const formattedAnswer = marked.parse(genData.answer);
+                        resultArea.innerHTML += `<div style="font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${{formattedAnswer}}</div>`;                        
+                       
+                       // 🌟 추가됨 2-2: AI 답변이 화면에 찍힌 직후, MathJax에게 "여기 수식 예쁘게 그려줘!" 명령
                         if (window.MathJax) {{
                             MathJax.typesetPromise([resultArea]).catch(function (err) {{
                                 console.error('MathJax 렌더링 에러:', err.message);
                             }});
                         }}
                     }}
+
                 }} catch (error) {{
                     resultArea.innerHTML += `<p style="color: red;">통신 중 에러가 발생했습니다: ${{error.message}}</p>`;
                 }} finally {{
-                    // 버튼 원상복구
                     askBtn.disabled = false;
                     askBtn.style.backgroundColor = '#2196F3';
                 }}
@@ -238,7 +254,11 @@ async def api_generate(request: GenerateRequest):
             {"role": "user", "content": request.question}
         ])
         
-        return {"answer": ai_response['message']['content']}
+        raw_answer = ai_response['message']['content']
+        safe_answer = html.escape(raw_answer)
+
+        return {"answer": safe_answer}
+    
     except Exception as e:
         error_msg = traceback.format_exc()
         print(f"🚨 생성 에러: {error_msg}")
