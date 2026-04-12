@@ -6,3 +6,4 @@ psycopg2-binary
 supabase
 ollama
 google-genai
+dotenv
