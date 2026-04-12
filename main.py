@@ -67,8 +67,10 @@ class Post(Base):
 class DraftNote(Base):
     __tablename__ = "draft_notes"
     id = Column(Integer, primary_key=True, index=True)
-    source_file = Column(String) # 영감을 준 원본 파일명
-    content = Column(String)     # AI가 새로 작성한 내용
+    source_file = Column(String) 
+    suggestion = Column(String)
+    content = Column(String)
+    upvotes = Column(Integer, default=0)
     created_at = Column(String, default=get_kst_now)
 
 Base.metadata.create_all(bind=engine)
@@ -79,6 +81,9 @@ class SearchRequest(BaseModel):
 class GenerateRequest(BaseModel):
     question: str
     context: str
+
+class VoteRequest(BaseModel):
+    action: str
 
 # ---------------------------------------------------------
 # 3. 라우터 설정
@@ -162,13 +167,12 @@ async def generate_daily_draft(secret: str = ""):
         The output MUST be written entirely in professional, academic English.
         You MUST strictly follow the exact structure below. Do not add any conversational filler.
 
-        [Part 1]
         Title: (Provide a descriptive filename, e.g., Advanced_Optimal_Taxation.md)
+
         Explanation: (Briefly explain the core idea of this new note in plain text. Do NOT use markdown format here.)
 
-
-
-        [Part 2]
+        ===SPLIT===
+        
         (Write the complete document here. This section must be written in pure Markdown format, ready to be added directly to a database. Use appropriate headers, and LaTeX for math enclosed in $ or $$. Do NOT wrap this section in ```markdown code blocks.)
         
         ***
@@ -189,11 +193,15 @@ async def generate_daily_draft(secret: str = ""):
                 if part.text:
                     full_content += part.text
         
-        # 4. 작성된 글을 임시 보관함(DraftNote)에 저장
+        parts = full_content.split("===SPLIT===")
+        suggestion_text = parts[0].strip() # 윗부분 (Title, Explanation)
+        draft_text = parts[1].strip() if len(parts) > 1 else "" # 아랫부분 (Markdown 본문)
+        
         db = SessionLocal()
         new_draft = DraftNote(
             source_file=random_doc['file_name'],
-            content=full_content
+            suggestion=suggestion_text,
+            content=draft_text
         )
         db.add(new_draft)
         db.commit()
@@ -223,3 +231,23 @@ def delete_post(post_id: int, password: str = Form(...)):
         db.commit()
     db.close()
     return RedirectResponse(url="/", status_code=303)
+
+@app.post("/api/vote/{draft_id}")
+async def vote_draft(draft_id: int, request: VoteRequest):
+    db = SessionLocal()
+    draft = db.query(DraftNote).filter(DraftNote.id == draft_id).first()
+    
+    if not draft:
+        db.close()
+        return JSONResponse(status_code=404, content={"error": "노트를 찾을 수 없습니다."})
+    
+    if request.action == "up":
+        draft.upvotes += 1
+    elif request.action == "down":
+        draft.upvotes -= 1
+        
+    db.commit()
+    new_votes = draft.upvotes
+    db.close()
+    
+    return {"upvotes": new_votes}

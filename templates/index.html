@@ -73,8 +73,21 @@
                 {% if drafts %}
                     {% for d in drafts %}
                     <li style="margin-bottom: 20px; padding: 15px; background: #f3e5f5; border-radius: 5px;">
-                        <span style="color: #6a1b9a; font-size: 13px; font-weight: bold;">[{{ d.created_at }}] 출처: {{ d.source_file }}</span>
-                        <div class="draft-content" style="margin-top: 10px; font-size: 15px; line-height: 1.6;" data-raw="{{ d.content | forceescape }}">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="color: #6a1b9a; font-size: 13px; font-weight: bold;">[{{ d.created_at }}] 출처: {{ d.source_file }}</span>
+                            
+                            <div style="display: flex; gap: 10px; align-items: center; background: white; padding: 4px 10px; border-radius: 20px; border: 1px solid #e1bee7;">
+                                <button onclick="voteDraft({{ d.id }}, 'up')" style="cursor:pointer; background:none; border:none; font-size: 16px;">👍</button>
+                                <span id="vote-count-{{ d.id }}" style="font-weight:bold; font-size:14px; color:#4a148c;">{{ d.upvotes }}</span>
+                                <button onclick="voteDraft({{ d.id }}, 'down')" style="cursor:pointer; background:none; border:none; font-size: 16px;">👎</button>
+                            </div>
+                        </div>
+                                                
+                        <div style="margin-top: 10px; padding: 15px; background: #e1bee7; border-radius: 5px; font-size: 15px; color: #000; text-align: left; white-space: pre-line;">
+                            {{ d.suggestion }}
+                        </div>
+
+                        <div class="draft-content" style="margin-top: 15px; font-size: 15px; line-height: 1.6; border-top: 1px dashed #ce93d8; padding-top: 15px;" data-raw="{{ d.content | forceescape }}">
                         </div>
                     </li>
                     {% endfor %}
@@ -85,6 +98,36 @@
         </div>
 
         <script>
+        // 🌟 1. 수식 숨바꼭질 마법 함수
+        function parseMarkdownProtectMath(text) {
+            let safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const mathBlocks = [];
+            let count = 0;
+
+            // [숨기기 1] 디스플레이 수식 ($$ ... $$) 
+            safeText = safeText.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                mathBlocks.push(match);
+                return `@@MATH_BLOCK_${count++}@@`; // 밑줄(_) 대신 골뱅이(@@) 사용!
+            });
+
+            // [숨기기 2] 인라인 수식 ($ ... $)
+            safeText = safeText.replace(/\$([^\$\n]+?)\$/g, (match) => {
+                mathBlocks.push(match);
+                return `@@MATH_BLOCK_${count++}@@`; // 여기도 골뱅이(@@) 사용!
+            });
+
+            // 1번 일꾼: 마크다운 파싱 (골뱅이는 마크다운이 건드리지 않음)
+            let htmlContent = marked.parse(safeText);
+
+            // [원상복구] 2번 일꾼을 위해 원래 수식 끼워 넣기
+            mathBlocks.forEach((block, index) => {
+                htmlContent = htmlContent.replace(`@@MATH_BLOCK_${index}@@`, () => block);
+            });
+
+            return htmlContent;
+        }
+
+        // 🌟 2. 검색 및 AI 답변 요청 함수
         async function askAI(event) {
             event.preventDefault();
             
@@ -136,7 +179,8 @@
                 if (genData.error) {
                     resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${genData.error}</p>`;
                 } else {
-                    const formattedAnswer = marked.parse(genData.answer);
+                    // 🔥 변경점: 마크다운 번역기 대신 마법 함수를 통과시킵니다!
+                    const formattedAnswer = parseMarkdownProtectMath(genData.answer);
                     resultArea.innerHTML += `<div style="font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${formattedAnswer}</div>`;                        
                     
                     if (window.MathJax) {
@@ -152,20 +196,18 @@
                 askBtn.style.backgroundColor = '#2196F3';
             }
         }
-        </script>
 
-        <script>
+        // 🌟 3. 아침마다 배달된 드래프트 노트 렌더링
         document.addEventListener("DOMContentLoaded", function() {
-            marked.setOptions({
-                breaks: true
-            });
+            marked.setOptions({ breaks: true });
 
             const drafts = document.querySelectorAll('.draft-content');
             
             drafts.forEach(draft => {
                 const rawText = draft.getAttribute('data-raw'); 
                 if (rawText) {                        
-                    draft.innerHTML = marked.parse(rawText);
+                    // 🔥 변경점: 여기도 마크다운 번역기 대신 마법 함수를 통과시킵니다!
+                    draft.innerHTML = parseMarkdownProtectMath(rawText);
                 }
             });
 
@@ -180,6 +222,28 @@
             }
             renderMath();
         });
+
+        // 🌟 4. 추천 기능 통신 함수
+        async function voteDraft(draftId, action) {
+            try {
+                const res = await fetch(`/api/vote/${draftId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action })
+                });
+                
+                const data = await res.json();
+                
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    // 화면의 점수만 살짝 변경 (새로고침 없음)
+                    document.getElementById(`vote-count-${draftId}`).innerText = data.upvotes;
+                }
+            } catch (error) {
+                console.error("추천 처리 중 에러:", error);
+            }
+        }
         </script>
     </body>
 </html>
