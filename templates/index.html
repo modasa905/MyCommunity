@@ -116,7 +116,6 @@
                 let docsHtml = `<div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 13px;"><strong>참고할 노트 발견</strong><ul>`;
                 searchData.docs.forEach((doc, idx) => {
                     docsHtml += `<li>${doc.file_name}</li>`;
-                    // 파이썬 문법이었던 \\n 대신 자바스크립트 표준 \n을 사용합니다.
                     contextText += `[참고문헌 ${idx+1} - ${doc.file_name}]\n${doc.content}\n\n`;
                 });
                 docsHtml += `</ul></div>`;

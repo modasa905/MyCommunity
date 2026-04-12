@@ -89,11 +89,14 @@ def read_root(request: Request):
     posts = db.query(Post).order_by(Post.id.desc()).all()
     drafts = db.query(DraftNote).order_by(DraftNote.id.desc()).all()
     db.close()
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
         "posts": posts,
         "drafts": drafts
-    })
+        }
+    )
 
 # [API 1] 검색 전용 엔드포인트 (빠름)
 @app.post("/api/search")
