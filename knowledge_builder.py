@@ -1,4 +1,6 @@
 import os
+import re
+import yaml
 from google import genai
 from google.genai import types
 from supabase import create_client, Client
@@ -7,25 +9,20 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------
 # 🛠️ 1. 환경 설정
 # ---------------------------------------------------------
-OBSIDIAN_VAULT_PATH = "/Users/nakjun/Library/CloudStorage/GoogleDrive-modasa905@gmail.com/내 드라이브/My_Obs/40. Study"
-
 load_dotenv()
-# Supabase 세팅
+OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH")
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Gemini 세팅
-# .env 파일의 내용을 로드
-# 환경 변수 가져오기
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 모델 설정
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 
 # ---------------------------------------------------------
-# 2. 핵심 함수들
+# 🧠 2. 핵심 함수들
 # ---------------------------------------------------------
 def get_all_md_files(directory_path):
     md_files = []
@@ -42,6 +39,23 @@ def read_md_content(file_path):
     except Exception as e:
         print(f"🚨 파일 읽기 에러 ({file_path}): {e}")
         return None
+
+def parse_frontmatter(text):
+    # 정규식을 이용해 --- 와 --- 사이의 텍스트를 찾아냅니다.
+    match = re.match(r'^\s*---\n(.*?)\n---\n(.*)', text, re.DOTALL)
+    
+    if match:
+        yaml_text = match.group(1) # 속성 데이터 부분
+        body_text = match.group(2).strip() # 진짜 본문
+        try:
+            metadata = yaml.safe_load(yaml_text) or {}
+            return metadata, body_text
+        except yaml.YAMLError as e:
+            print(f"⚠️ YAML 파싱 에러: {e}")
+            return {}, text
+            
+    # 프런트매터가 아예 없는 파일이라면 빈 딕셔너리와 원본 텍스트를 그대로 반환합니다.
+    return {}, text
 
 def chunk_text(text, chunk_size=500, overlap=50):
     chunks = []
@@ -67,7 +81,8 @@ if __name__ == "__main__":
     print("지식 베이스 구축을 시작합니다...\n")
     
     print("기존 데이터를 초기화합니다... ")
-    supabase.table("obsidian_notes").delete().neq("id", 0).execute()
+    supabase.table("obsidian_chunks").delete().neq("id", 0).execute()
+    supabase.table("obsidian_documents").delete().neq("id", 0).execute()
     
     all_files = get_all_md_files(OBSIDIAN_VAULT_PATH)
     print(f"총 {len(all_files)}개의 마크다운 파일을 찾았습니다.\n")
@@ -75,32 +90,48 @@ if __name__ == "__main__":
     total_chunks_inserted = 0
     for file_path in all_files:
         file_name = os.path.basename(file_path)
-        # 확장자(.md)를 제거한 순수 제목만 추출
         clean_title = os.path.splitext(file_name)[0] 
-        content = read_md_content(file_path)
-        if not content: continue
+        raw_content = read_md_content(file_path)
+        if not raw_content: continue
             
-        chunks = chunk_text(content)
-        print(f"[{file_name}] 처리 중... ({len(chunks)}개 조각)")
+        metadata, pure_content = parse_frontmatter(raw_content)
+            
+        print(f"[{file_name}] 부모 문서 저장 중... (메타데이터 {len(metadata)}개 발견)")
         
-        # 핵심 수정: enumerate를 사용하여 청크의 순번(i)을 가져옵니다.
+        # 부모 테이블에 저장
+        doc_data = {
+            "file_name": file_name,
+            "full_content": pure_content, # 메타데이터가 제거된 순수 본문만 저장 (또는 raw_content 유지 가능)
+            "metadata": metadata          # 추출된 속성값들을 JSON 형태로 저장
+        }
+        doc_res = supabase.table("obsidian_documents").insert(doc_data).execute()
+        document_id = doc_res.data[0]['id']
+        
+        # 문서를 조각내고, '부모 ID'를 달아서 자식 테이블에 저장
+        chunks = chunk_text(pure_content)
+        print(f"  ↪ {len(chunks)}개 조각 임베딩 중...")
+        
+        chunk_records = [] # 조각들을 모아둘 빈 바구니(리스트)를 준비합니다.
+        
         for i, chunk in enumerate(chunks):
             if not chunk.strip(): continue
             
-            # 핵심 수정: 청크 맨 앞에 문서 제목과 순번을 주입합니다.
             enriched_chunk = f"[Document: {clean_title} | Part: {i+1} of {len(chunks)}]\n{chunk}"
-            
-            # 임베딩 생성 시 원본 chunk가 아닌 '강화된 청크'를 먹입니다.
             vector = get_gemini_embedding(enriched_chunk)
             
-            # DB에 저장할 때도 '강화된 청크'를 content로 저장합니다.
-            data = {
-                "file_name": file_name, 
+            chunk_data = {
+                "document_id": document_id, 
                 "content": enriched_chunk, 
                 "embedding": vector
             }
-            supabase.table("obsidian_notes").insert(data).execute()
-            total_chunks_inserted += 1
+            # 하나씩 보내지 않고, 일단 바구니에 담습니다.
+            chunk_records.append(chunk_data) 
             
-    print("\n 모든 작업이 완료되었습니다!")
-    print(f" 총 {total_chunks_inserted}개의 지식 조각이 Gemini 좌표로 저장되었습니다.")
+        # 바구니에 조각이 모였다면, 단 1번의 API 통신으로 한꺼번에 밀어 넣습니다 (Batch Insert)
+        if chunk_records:
+            supabase.table("obsidian_chunks").insert(chunk_records).execute()
+            total_chunks_inserted += len(chunk_records)
+            print(f"  ✅ {len(chunk_records)}개 조각 저장 완료!")
+            
+    print("\n🎉 모든 작업이 완료되었습니다!")
+    print(f"총 {total_chunks_inserted}개의 지식 조각이 부모-자식 구조로 완벽하게 분리 저장되었습니다.")

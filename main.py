@@ -92,10 +92,9 @@ class VoteRequest(BaseModel):
 # 1. 메인 페이지
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
-    # 검색용 지식 개수만 가져옵니다.
-    response = supabase.table("obsidian_notes").select("file_name").execute()
-    unique_files = set(item['file_name'] for item in response.data)
-    total_notes = len(unique_files)
+    # 🌟 수정: 부모 테이블(obsidian_documents)에서 데이터 개수를 바로 셉니다.
+    response = supabase.table("obsidian_documents").select("id").execute()
+    total_notes = len(response.data)
     
     return templates.TemplateResponse(
         request=request,
@@ -131,7 +130,7 @@ def read_drafts(request: Request):
 @app.post("/api/search")
 async def api_search(request: SearchRequest):
     try:
-        # 1. 질문 임베딩 생성
+        # 1. 질문 임베딩 생성 (3072차원)
         result = gemini_client.models.embed_content(
             model=EMBEDDING_MODEL,
             contents=request.question,
@@ -139,41 +138,38 @@ async def api_search(request: SearchRequest):
         )
         question_embedding = result.embeddings[0].values
         
-        # 🌟 2. 넉넉하게 15개 정도의 조각을 먼저 가져옵니다 (같은 파일이 중복으로 나올 수 있으므로)
-        response = supabase.rpc("match_notes", {
+        # 🌟 2. 자식 테이블에서 관련 조각 15개 검색 (새로운 RPC 함수 사용)
+        response = supabase.rpc("match_chunks", {
             "query_embedding": question_embedding,
             "match_threshold": 0.3, 
             "match_count": 15 
         }).execute()
         
-        # 🌟 3. 파일 이름 중복을 제거하면서 딱 3개의 '고유한 파일명'만 골라냅니다.
-        unique_filenames = []
-        seen_filenames = set()
+        # 🌟 3. 부모 문서 ID 중복 제거 (Top 3 추출)
+        unique_doc_ids = []
+        seen_ids = set()
         
-        for doc in response.data:
-            if doc["file_name"] not in seen_filenames:
-                unique_filenames.append(doc["file_name"])
-                seen_filenames.add(doc["file_name"])
+        for chunk in response.data:
+            doc_id = chunk["document_id"] # 파일 이름 대신 부모 ID를 가져옵니다.
+            if doc_id not in seen_ids:
+                unique_doc_ids.append(doc_id)
+                seen_ids.add(doc_id)
                 
-            if len(unique_filenames) == 3: # 3개의 다른 파일을 찾았으면 멈춤!
+            if len(unique_doc_ids) == 3: 
                 break
                 
-        # 🌟 4. [Small-to-Big 전략] 선정된 3개 파일의 "전체 내용"을 DB에서 긁어와 합칩니다.
+        # 🌟 4. 부모 테이블에서 조립 완료된 '원본 전체 문서'를 바로 가져옵니다.
         final_docs = []
-        for filename in unique_filenames:
-            # 해당 파일명을 가진 모든 청크를 id 순서대로 가져옴
-            file_chunks = supabase.table("obsidian_notes").select("content").eq("file_name", filename).order("id").execute()
+        if unique_doc_ids:
+            # .in_() 메서드를 쓰면 리스트 안의 ID들을 한 번에 다 찾아옵니다.
+            docs_response = supabase.table("obsidian_documents").select("file_name, full_content").in_("id", unique_doc_ids).execute()
             
-            # 조각들을 엔터(\n)로 연결하여 하나의 완전한 글로 복원
-            full_text = "\n".join([chunk['content'] for chunk in file_chunks.data])
+            for doc in docs_response.data:
+                final_docs.append({
+                    "file_name": doc["file_name"],
+                    "content": doc["full_content"] # 조립 과정 삭제! 바로 full_content 사용
+                })
             
-            # 프론트엔드로 전달할 최종 데이터 조립
-            final_docs.append({
-                "file_name": filename,
-                "content": full_text
-            })
-            
-        # 프론트엔드에는 쪼개진 조각이 아닌, 합쳐진 '전체 문서 3개'가 전달됩니다!
         return {"docs": final_docs}
         
     except Exception as e:
@@ -202,13 +198,12 @@ CRON_SECRET = os.getenv("CRON_SECRET")
 
 @app.get("/api/generate-daily-draft")
 async def generate_daily_draft(secret: str = ""):
-    # 1. 보안 검증
     if secret != CRON_SECRET:
         return JSONResponse(status_code=401, content={"error": "접근 권한이 없습니다."})
 
     try:
-        # 2. Supabase에서 랜덤으로 노트 하나 뽑기
-        response = supabase.table("obsidian_notes").select("*").execute()
+        # 🌟 수정: 부모 테이블(obsidian_documents)에서 파일명과 전체 내용을 가져옵니다.
+        response = supabase.table("obsidian_documents").select("file_name, full_content").execute()
         if not response.data:
             return {"status": "error", "message": "도서관에 책이 없습니다."}
         
@@ -232,7 +227,7 @@ async def generate_daily_draft(secret: str = ""):
         (Append a metadata section (Parent Path, Sequence, Related Notes, and Source) that exactly mirrors the formatting of the [Original Note]. Thoughtfully adapt the links to fit this new extension.)
         
         [Original Note: {random_doc['file_name']}]
-        {random_doc['content']}
+        {random_doc['full_content']} 
         """
         
         ai_response = gemini_client.models.generate_content(
