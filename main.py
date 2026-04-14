@@ -1,3 +1,5 @@
+import re
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -92,15 +94,32 @@ class VoteRequest(BaseModel):
 # 1. 메인 페이지
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
-    # 🌟 수정: 부모 테이블(obsidian_documents)에서 데이터 개수를 바로 셉니다.
-    response = supabase.table("obsidian_documents").select("id").execute()
-    total_notes = len(response.data)
-    
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={"total_notes": total_notes}
-    )
+    try:
+        # 조회수(view_count) 내림차순으로 상위 100개 문서 가져오기
+        response = supabase.table("obsidian_documents") \
+            .select("id, file_name, view_count") \
+            .order("view_count", desc=True) \
+            .limit(100) \
+            .execute()
+        
+        top_notes = response.data
+        total_notes = len(top_notes) # 전체 지식의 양 (상위 100개 기준)
+
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "total_notes": total_notes,
+                "top_notes": top_notes # 템플릿으로 데이터 전달
+            }
+        )
+    except Exception as e:
+        print(f"🚨 메인 페이지 로드 에러: {e}")
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={"total_notes": 0, "top_notes": []}
+        )
 
 # 2. 커뮤니티 페이지
 @app.get("/community", response_class=HTMLResponse) # URL을 /community로 변경
@@ -138,19 +157,19 @@ async def api_search(request: SearchRequest):
         )
         question_embedding = result.embeddings[0].values
         
-        # 🌟 2. 자식 테이블에서 관련 조각 15개 검색 (새로운 RPC 함수 사용)
+        # 2. 자식 테이블에서 관련 조각 15개 검색
         response = supabase.rpc("match_chunks", {
             "query_embedding": question_embedding,
             "match_threshold": 0.3, 
             "match_count": 15 
         }).execute()
         
-        # 🌟 3. 부모 문서 ID 중복 제거 (Top 3 추출)
+        # 3. 부모 문서 ID 중복 제거 (Top 3 추출)
         unique_doc_ids = []
         seen_ids = set()
         
         for chunk in response.data:
-            doc_id = chunk["document_id"] # 파일 이름 대신 부모 ID를 가져옵니다.
+            doc_id = chunk["document_id"]
             if doc_id not in seen_ids:
                 unique_doc_ids.append(doc_id)
                 seen_ids.add(doc_id)
@@ -158,17 +177,24 @@ async def api_search(request: SearchRequest):
             if len(unique_doc_ids) == 3: 
                 break
                 
-        # 🌟 4. 부모 테이블에서 조립 완료된 '원본 전체 문서'를 바로 가져옵니다.
+        # 4. 부모 테이블에서 문서 가져오기 & 조회수(view_count) 1 증가시키기
         final_docs = []
         if unique_doc_ids:
-            # .in_() 메서드를 쓰면 리스트 안의 ID들을 한 번에 다 찾아옵니다.
-            docs_response = supabase.table("obsidian_documents").select("file_name, full_content").in_("id", unique_doc_ids).execute()
+            # 업데이트를 위해 'id'와 'view_count'도 같이 꺼내옵니다.
+            docs_response = supabase.table("obsidian_documents").select("id, file_name, full_content, view_count").in_("id", unique_doc_ids).execute()
             
             for doc in docs_response.data:
                 final_docs.append({
                     "file_name": doc["file_name"],
-                    "content": doc["full_content"] # 조립 과정 삭제! 바로 full_content 사용
+                    "content": doc["full_content"] 
                 })
+                
+                # 현재 조회수를 확인하고 +1을 더해서 DB에 곧바로 덮어씁니다.
+                current_count = doc.get("view_count") or 0
+                supabase.table("obsidian_documents") \
+                    .update({"view_count": current_count + 1}) \
+                    .eq("id", doc["id"]) \
+                    .execute()
             
         return {"docs": final_docs}
         
@@ -179,7 +205,15 @@ async def api_search(request: SearchRequest):
 @app.post("/api/generate")
 async def api_generate(request: GenerateRequest):
     try:
-        system_prompt = f"당신은 경제학 연구자의 비서입니다. 아래 [참고문헌]을 바탕으로 한국어로 답하세요.\n\n[참고문헌]\n{request.context}"
+        # 1. 질문에 한국어(한글)가 하나라도 포함되어 있는지 검사합니다.
+        # \u3130-\u318F는 자음/모음, \uAC00-\uD7A3는 완성된 한글 음절을 의미합니다.
+        has_korean = bool(re.search(r'[\u3130-\u318F\uAC00-\uD7A3]', request.question))
+        
+        # 2. 언어에 따라 시스템 프롬프트를 분기합니다.
+        if has_korean:
+            system_prompt = f"당신은 경제학 연구자의 비서입니다. 아래 [참고문헌]을 바탕으로 한국어로 답하세요.\n\n[참고문헌]\n{request.context}"
+        else:
+            system_prompt = f"You are an assistant for an economics researcher. Please answer in English based on the [References] below.\n\n[References]\n{request.context}"
         
         ai_response = ollama_client.chat(model=CHAT_MODEL, messages=[
             {"role": "system", "content": system_prompt},
@@ -191,7 +225,7 @@ async def api_generate(request: GenerateRequest):
     
     except Exception as e:
         error_msg = traceback.format_exc()
-        print(f"🚨 생성 에러: {error_msg}")
+        print(f"🚨 {error_msg}")
         return {"error": str(e)}
 
 CRON_SECRET = os.getenv("CRON_SECRET") 
