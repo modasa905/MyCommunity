@@ -131,7 +131,7 @@ def read_drafts(request: Request):
 @app.post("/api/search")
 async def api_search(request: SearchRequest):
     try:
-        # Gemini 3072차원 임베딩
+        # 1. 질문 임베딩 생성
         result = gemini_client.models.embed_content(
             model=EMBEDDING_MODEL,
             contents=request.question,
@@ -139,14 +139,43 @@ async def api_search(request: SearchRequest):
         )
         question_embedding = result.embeddings[0].values
         
-        # Supabase 검색
+        # 🌟 2. 넉넉하게 15개 정도의 조각을 먼저 가져옵니다 (같은 파일이 중복으로 나올 수 있으므로)
         response = supabase.rpc("match_notes", {
             "query_embedding": question_embedding,
             "match_threshold": 0.3, 
-            "match_count": 3
+            "match_count": 15 
         }).execute()
         
-        return {"docs": response.data}
+        # 🌟 3. 파일 이름 중복을 제거하면서 딱 3개의 '고유한 파일명'만 골라냅니다.
+        unique_filenames = []
+        seen_filenames = set()
+        
+        for doc in response.data:
+            if doc["file_name"] not in seen_filenames:
+                unique_filenames.append(doc["file_name"])
+                seen_filenames.add(doc["file_name"])
+                
+            if len(unique_filenames) == 3: # 3개의 다른 파일을 찾았으면 멈춤!
+                break
+                
+        # 🌟 4. [Small-to-Big 전략] 선정된 3개 파일의 "전체 내용"을 DB에서 긁어와 합칩니다.
+        final_docs = []
+        for filename in unique_filenames:
+            # 해당 파일명을 가진 모든 청크를 id 순서대로 가져옴
+            file_chunks = supabase.table("obsidian_notes").select("content").eq("file_name", filename).order("id").execute()
+            
+            # 조각들을 엔터(\n)로 연결하여 하나의 완전한 글로 복원
+            full_text = "\n".join([chunk['content'] for chunk in file_chunks.data])
+            
+            # 프론트엔드로 전달할 최종 데이터 조립
+            final_docs.append({
+                "file_name": filename,
+                "content": full_text
+            })
+            
+        # 프론트엔드에는 쪼개진 조각이 아닌, 합쳐진 '전체 문서 3개'가 전달됩니다!
+        return {"docs": final_docs}
+        
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
