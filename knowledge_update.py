@@ -6,9 +6,10 @@ from google import genai
 from google.genai import types
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 # ---------------------------------------------------------
-# 🛠️ 1. 환경 설정
+# 1. 환경 설정
 # ---------------------------------------------------------
 load_dotenv()
 STAGE_FOLDER_PATH = os.getenv("STAGE_FOLDER_PATH")
@@ -27,7 +28,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 
 # ---------------------------------------------------------
-# 🧠 2. 핵심 함수들
+# 2. 핵심 함수들
 # ---------------------------------------------------------
 def get_all_md_files(directory_path):
     md_files = []
@@ -58,15 +59,6 @@ def parse_frontmatter(text):
             return {}, text
     return {}, text
 
-def chunk_text(text, chunk_size=500, overlap=50):
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunks.append(text[start:end])
-        start += chunk_size - overlap
-    return chunks
-
 def get_gemini_embedding(text):
     result = client.models.embed_content(
         model=EMBEDDING_MODEL,
@@ -80,6 +72,22 @@ def get_gemini_embedding(text):
 # ---------------------------------------------------------
 if __name__ == "__main__":
     print(f"🔍 Stage 폴더의 파일 동기화를 시작합니다...\n")
+    
+    # 🌟 3. LangChain 하이브리드 분할기 초기 세팅
+    headers_to_split_on = [
+        ("#", "Header 1"),
+        ("##", "Header 2"),
+        ("###", "Header 3"),
+    ]
+    markdown_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=headers_to_split_on, 
+        strip_headers=False 
+    )
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", ".", " ", ""] 
+    )
     
     stage_files = get_all_md_files(STAGE_FOLDER_PATH)
     
@@ -113,15 +121,23 @@ if __name__ == "__main__":
         doc_res = supabase.table("obsidian_documents").insert(doc_data).execute()
         document_id = doc_res.data[0]['id']
             
-        chunks = chunk_text(pure_content)
-        print(f"⏳ [{file_name}] 새 데이터 임베딩 중... ({len(chunks)}개 조각)")
+        # 4. 새로운 스마트 청크 분할 적용
+        md_header_splits = markdown_splitter.split_text(pure_content)
+        final_chunks = text_splitter.split_documents(md_header_splits)
         
-        # 4. 자식 조각들을 바구니에 담기 (Batch Insert 준비)
+        print(f"⏳ [{file_name}] 새 데이터 임베딩 중... ({len(final_chunks)}개 조각)")
+        
+        # 5. 자식 조각들을 바구니에 담기 (Batch Insert 준비)
         chunk_records = []
-        for i, chunk in enumerate(chunks):
-            if not chunk.strip(): continue
+        for i, chunk_doc in enumerate(final_chunks):
+            chunk_text = chunk_doc.page_content
+            if not chunk_text.strip(): continue
             
-            enriched_chunk = f"[Document: {clean_title} | Part: {i+1} of {len(chunks)}]\n{chunk}"
+            # 🌟 6. 섹션 헤더 정보를 추출하여 이름표(Label) 달기
+            header_info = " > ".join([v for k, v in chunk_doc.metadata.items() if k.startswith("Header")])
+            header_context = f" | Section: {header_info}" if header_info else ""
+            
+            enriched_chunk = f"[Document: {clean_title}{header_context} | Part: {i+1} of {len(final_chunks)}]\n{chunk_text}"
             vector = get_gemini_embedding(enriched_chunk)
             
             chunk_records.append({
@@ -130,12 +146,12 @@ if __name__ == "__main__":
                 "embedding": vector
             })
             
-        # 5. 바구니에 담긴 조각들을 한 번의 통신으로 쏟아붓기
+        # 7. 바구니에 담긴 조각들을 한 번의 통신으로 쏟아붓기
         if chunk_records:
             supabase.table("obsidian_chunks").insert(chunk_records).execute()
             total_chunks_inserted += len(chunk_records)
             
-        # 6. 파일 이동 (작업 완료 후 본래 폴더로 복귀)
+        # 8. 파일 이동 (작업 완료 후 본래 폴더로 복귀)
         target_path = os.path.join(TARGET_FOLDER_PATH, file_name)
         shutil.move(file_path, target_path) 
         print(f"📦 [{file_name}] 메타데이터 추출 완료 & 파일 본래 위치로 이동 성공!\n")

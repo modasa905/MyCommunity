@@ -47,13 +47,19 @@
     <div style="background: white; border: 2px solid #2196F3; padding: 20px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
         <h2 style="margin-top: 0; color: #2196F3;">Search in EconNotes</h2>
         <form id="askForm" onsubmit="askAI(event)" style="display: flex; gap: 10px;">
-            <input type="text" id="questionInput" placeholder="Ask a question..." required style="flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;">
-            <button type="submit" id="askBtn" style="padding: 10px 20px; background-color: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">Search</button>
+            <select id="aiMode" style="padding: 10px; font-size: 15px; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9; cursor: pointer; outline: none;">
+                <option value="express">Express</option>
+                <option value="deep">Deep</option>
+                <option value="critical">Critical</option>
+            </select>
+            <input type="text" id="questionInput" placeholder="Ask a question..." required style="flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; outline: none;">
+            <button type="submit" id="askBtn" style="padding: 10px 20px; background-color: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; transition: 0.2s;">Search</button>
         </form>
         
         <div id="ai-result-area" style="display: none; background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin-top: 20px; border-left: 5px solid #2196F3;">
         </div>
     </div>
+
     <div class="top-notes-container" style="background: #fafafa; padding: 20px; border-radius: 8px; border: 1px solid #eee;">
         <h3 style="margin-top: 0; color: #333;">Note list (Top 100)</h3>
         <ul style="list-style: none; padding: 0; margin: 0;">
@@ -112,6 +118,10 @@
             event.preventDefault();
             
             const question = document.getElementById('questionInput').value;
+            
+            // 사용자가 선택한 모드(mode) 값을 가져옵니다
+            const selectedMode = document.getElementById('aiMode').value; 
+            
             const resultArea = document.getElementById('ai-result-area');
             const askBtn = document.getElementById('askBtn');
             
@@ -121,6 +131,7 @@
             resultArea.innerHTML = `<p style="color: #666; font-weight: bold;">Searching...</p>`;
 
             try {
+                // [1] 검색 요청 (여기서는 질문만 보냅니다)
                 const searchRes = await fetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -136,32 +147,68 @@
                 }
 
                 let contextText = "";
-                let docsHtml = `<div style="background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 13px;"><strong>Referenced Notes Found</strong><ul>`;
+                
+                // UI 변경점: 3개의 전체 문서(Full Document)를 시각화하고 AI에게 전달합니다.
+                let docsHtml = `
+                    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 15px; border: 1px solid #e0e0e0;">
+                        <strong style="display: block; margin-bottom: 10px; color: #555; font-size: 13px;">Referenced Documents</strong>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                `;
+
                 searchData.docs.forEach((doc, idx) => {
-                    docsHtml += `<li>${doc.file_name}</li>`;
+                    // 1. UI에는 검색된 3개 문서의 원본 파일명을 뱃지로 표시합니다. (앞에 문서 아이콘 추가)
+                    docsHtml += `
+                        <span style="background-color: #e3f2fd; color: #0d47a1; padding: 5px 12px; border-radius: 15px; font-size: 12.5px; font-weight: 600; border: 1px solid #bbdefb; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                            📄 ${doc.file_name}
+                        </span>
+                    `;
+                    // 2. AI가 긴 문서를 읽을 때 헷갈리지 않도록, Reference 번호 옆에 파일명을 다시 명시해 줍니다!
                     contextText += `[Reference ${idx+1} - ${doc.file_name}]\n${doc.content}\n\n`;
                 });
-                docsHtml += `</ul></div>`;
+
+                docsHtml += `</div></div>`;
                 
                 resultArea.innerHTML += docsHtml;
                 resultArea.innerHTML += `<p id="ai-loading" style="color: #E65100; font-weight: bold; margin-top: 15px;">Generating answer...</p>`;
 
                 if (window.MathJax) { MathJax.typesetPromise([resultArea]); }
 
+                // [2] 답변 생성 요청
                 const genRes = await fetch('/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: question, context: contextText })
+                    // 백엔드로 보내는 데이터(body)에 'mode: selectedMode'를 추가합니다
+                    body: JSON.stringify({ 
+                        question: question, 
+                        context: contextText,
+                        mode: selectedMode 
+                    })
                 });
                 const genData = await genRes.json();
 
                 document.getElementById('ai-loading').style.display = 'none';
+                
                 if (genData.error) {
-                    resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">에러: ${genData.error}</p>`;
+                    resultArea.innerHTML += `<p style="color: red; margin-top: 15px;">Error: ${genData.error}</p>`;
                 } else {
-                    // 🔥 변경점: 마크다운 번역기 대신 마법 함수를 통과시킵니다!
+                    // 🌟 1. 사고 과정(Thought Process) 버튼 UI
+                    if (genData.thought && genData.thought.trim() !== "") {
+                        const thoughtHtml = `
+                            <details style="margin-top: 15px; margin-bottom: 15px; background-color: #f5f5f5; border-radius: 8px; border: 1px solid #ddd; overflow: hidden;">
+                                <summary style="padding: 10px 15px; cursor: pointer; font-weight: bold; color: #555; display: flex; align-items: center; user-select: none;">
+                                    View Reasoning
+                                </summary>
+                                <div style="padding: 15px; border-top: 1px solid #ddd; font-size: 13.5px; color: #666; background-color: #fafafa; white-space: pre-wrap; font-family: monospace; max-height: 400px; overflow-y: auto;">
+                                    ${genData.thought}
+                                </div>
+                            </details>
+                        `;
+                        resultArea.innerHTML += thoughtHtml;
+                    }
+
+                    // 🌟 2. 최종 정답 텍스트 출력
                     const formattedAnswer = parseMarkdownProtectMath(genData.answer);
-                    resultArea.innerHTML += `<div style="font-size: 15px; line-height: 1.6; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">${formattedAnswer}</div>`;                        
+                    resultArea.innerHTML += `<div style="font-size: 15px; line-height: 1.6; margin-top: 10px; border-top: 2px solid #2196F3; padding-top: 15px;">${formattedAnswer}</div>`;                        
                     
                     if (window.MathJax) {
                         MathJax.typesetPromise([resultArea]).catch(function (err) {

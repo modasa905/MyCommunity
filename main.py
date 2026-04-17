@@ -1,4 +1,6 @@
 import re
+import time
+import os
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -9,7 +11,6 @@ from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-import os
 from datetime import datetime, timedelta, timezone
 import traceback
 from dotenv import load_dotenv
@@ -43,9 +44,7 @@ ollama_client = OllamaClient(
     headers={'Authorization': f'Bearer {OLLAMA_API_KEY}'}
 )
 
-CRON_SECRET = os.getenv("CRON_SECRET") 
-
-CHAT_MODEL = os.getenv("CHAT_MODEL")
+CRON_SECRET = os.getenv("CRON_SECRET")
 DRAFT_MODEL = os.getenv("DRAFT_MODEL")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 
@@ -87,6 +86,11 @@ class GenerateRequest(BaseModel):
 
 class VoteRequest(BaseModel):
     action: str
+
+class GenerateRequest(BaseModel):
+    question: str
+    context: str
+    mode: str = "express"
 
 # ---------------------------------------------------------
 # 3. 라우터 설정
@@ -149,15 +153,34 @@ def read_drafts(request: Request):
 @app.post("/api/search")
 async def api_search(request: SearchRequest):
     try:
-        # 1. 질문 임베딩 생성 (3072차원)
-        result = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=request.question,
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
-        )
-        question_embedding = result.embeddings[0].values
         
-        # 2. 자식 테이블에서 관련 조각 15개 검색
+        # 1. 질문 임베딩 생성 - Retry 로직 (안정성 확보)
+        max_retries = 3
+        question_embedding = None
+        
+        for attempt in range(max_retries):
+            try:
+                result = gemini_client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=request.question,
+                    config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
+                )
+                question_embedding = result.embeddings[0].values
+                break  # 성공 시 루프 탈출
+                
+            except Exception as e:
+                error_str = str(e)
+                if "503" in error_str and attempt < max_retries - 1:
+                    sleep_time = 2 ** attempt
+                    print(f"⚠️ 임베딩 서버 과부하 (503). {sleep_time}초 후 재시도... ({attempt+1}/{max_retries})")
+                    time.sleep(sleep_time)
+                else:
+                    raise e
+        
+        if not question_embedding:
+            raise Exception("임베딩 생성에 최종 실패했습니다.")
+        
+        # 2. 자식 테이블에서 관련 처ㅇ크15개 검색
         response = supabase.rpc("match_chunks", {
             "query_embedding": question_embedding,
             "match_threshold": 0.3, 
@@ -177,19 +200,18 @@ async def api_search(request: SearchRequest):
             if len(unique_doc_ids) == 3: 
                 break
                 
-        # 4. 부모 테이블에서 문서 가져오기 & 조회수(view_count) 1 증가시키기
+        # 4. 부모 테이블에서 문서 전체 가져오기 & 조회수 증가
         final_docs = []
         if unique_doc_ids:
-            # 업데이트를 위해 'id'와 'view_count'도 같이 꺼내옵니다.
             docs_response = supabase.table("obsidian_documents").select("id, file_name, full_content, view_count").in_("id", unique_doc_ids).execute()
             
             for doc in docs_response.data:
                 final_docs.append({
                     "file_name": doc["file_name"],
-                    "content": doc["full_content"] 
+                    "content": doc["full_content"] # 🌟 스마트 청크 대신 원본 전체 텍스트 사용!
                 })
                 
-                # 현재 조회수를 확인하고 +1을 더해서 DB에 곧바로 덮어씁니다.
+                # 조회수 1 증가
                 current_count = doc.get("view_count") or 0
                 supabase.table("obsidian_documents") \
                     .update({"view_count": current_count + 1}) \
@@ -197,38 +219,112 @@ async def api_search(request: SearchRequest):
                     .execute()
             
         return {"docs": final_docs}
-        
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-# [API 2] 답변 생성 전용 엔드포인트 (느림)
-@app.post("/api/generate")
-async def api_generate(request: GenerateRequest):
-    try:
-        # 1. 질문에 한국어(한글)가 하나라도 포함되어 있는지 검사합니다.
-        # \u3130-\u318F는 자음/모음, \uAC00-\uD7A3는 완성된 한글 음절을 의미합니다.
-        has_korean = bool(re.search(r'[\u3130-\u318F\uAC00-\uD7A3]', request.question))
-        
-        # 2. 언어에 따라 시스템 프롬프트를 분기합니다.
-        if has_korean:
-            system_prompt = f"당신은 경제학 연구자의 비서입니다. 아래 [참고문헌]을 바탕으로 한국어로 답하세요.\n\n[참고문헌]\n{request.context}"
-        else:
-            system_prompt = f"You are an assistant for an economics researcher. Please answer in English based on the [References] below.\n\n[References]\n{request.context}"
-        
-        ai_response = ollama_client.chat(model=CHAT_MODEL, messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": request.question}
-        ])
-        
-        raw_answer = ai_response['message']['content']
-        return {"answer": raw_answer}
     
     except Exception as e:
+        import traceback
         error_msg = traceback.format_exc()
-        print(f"🚨 {error_msg}")
-        return {"error": str(e)}
+        print(f"🚨 검색 에러 상세 로그:\n{error_msg}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-CRON_SECRET = os.getenv("CRON_SECRET") 
+# [API 2] 답변 생성 전용 엔드포인트
+@app.post("/api/generate")
+async def api_generate(request: GenerateRequest):
+    try:        
+        has_korean = bool(re.search(r'[\u3130-\u318F\uAC00-\uD7A3]', request.question))
+        language_instruction = "한국어로 답하세요." if has_korean else "Please answer in English."
+        
+        # 1. 모드 설정
+        mode_settings = {
+            "express": {
+                "provider": os.getenv("FAST_MODEL_PROVIDER"),
+                "model": os.getenv("FAST_MODEL"),
+                "prompt": "Quickly and concisely summarize the core points using ONLY the information provided in the [References]."
+            },
+            "deep": {
+                "provider": os.getenv("HEAVY_MODEL_PROVIDER"),
+                "model": os.getenv("HEAVY_MODEL"),
+                "prompt": "Analyze the provided [References] in great depth and explain them logically. However, you must adhere to the content and scope specified in the literature without adding external claims."
+            },
+            "critical": {
+                "provider": os.getenv("HEAVY_MODEL_PROVIDER"),
+                "model": os.getenv("HEAVY_MODEL"),
+                "prompt": "Answer based on the provided [References], but approach the topic critically from the perspective of a senior researcher(PhD-level). If you identify limitations in the literature, you are explicitly encouraged to draw upon your broader academic knowledge outside the provided references. However, you MUST clearly distinguish between the information found in the [References] and the external knowledge you introduce."
+            }
+        }
+
+        settings = mode_settings.get(request.mode, mode_settings["express"])
+        provider = settings["provider"]
+        target_model = settings["model"]
+        behavior_prompt = settings["prompt"]
+
+        system_prompt = f"You are an assistant for an economics researcher. {behavior_prompt} {language_instruction}\n\n[References]\n{request.context}"
+        
+        if provider == "ollama":
+            ai_response = ollama_client.chat(model=target_model, messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.question}
+            ])
+            return {"answer": ai_response['message']['content'], "thought": ""}
+            
+        elif provider == "gemini":
+            combined_prompt = f"{system_prompt}\n\nUser Question: {request.question}"
+            gen_config = types.GenerateContentConfig()
+            
+            if request.mode in ["deep", "critical"]:
+                gen_config.thinking_config = types.ThinkingConfig(
+                    include_thoughts=True
+                )
+        
+            max_retries = 3
+            ai_response = None
+            
+            for attempt in range(max_retries):
+                try:
+                    ai_response = gemini_client.models.generate_content(
+                        model=target_model,
+                        contents=combined_prompt,
+                        config=gen_config
+                    )
+                    break 
+                except Exception as e:
+                    if "503" in str(e) and attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    elif "503" in str(e):
+                        fallback_model = os.getenv("FALLBACK_MODEL")
+                        fallback_res = ollama_client.chat(model=fallback_model, messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": request.question}
+                        ])
+                        return {"answer": fallback_res['message']['content'], "thought": "⚠️ Gemini 서버 과부하로 로컬 모델 우회 답변입니다."}
+                    else:
+                        raise e 
+                        
+            if ai_response:
+                raw_answer = ""
+                thought_process = "" 
+                
+                if ai_response.candidates and ai_response.candidates[0].content.parts:
+                    for part in ai_response.candidates[0].content.parts:
+                        if not part.text:
+                            continue
+                        
+                        if part.thought:
+                            thought_process += part.text + "\n\n"
+                        else:
+                            raw_answer += part.text
+                            
+                return {"answer": raw_answer, "thought": thought_process.strip()}
+            else:
+                raise Exception("서버 통신에 최종 실패했습니다.")
+                
+        else:
+            raise ValueError(f"지원하지 않는 AI Provider 입니다: {provider}")
+
+    except Exception as e:
+        print(f"🚨 생성 에러: {traceback.format_exc()}")
+        return {"error": str(e)}
 
 @app.get("/api/generate-daily-draft")
 async def generate_daily_draft(secret: str = ""):
